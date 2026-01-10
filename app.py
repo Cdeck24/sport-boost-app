@@ -234,7 +234,14 @@ def run_optimization(df, num_lineups=1):
 # --- Sidebar: Configuration ---
 with st.sidebar:
     st.header("1. Fetch Boosts")
-    selected_sports = st.multiselect("Select Leagues", ["ncaam", "nba", "nhl", "mlb", "nfl"], default=["nba"])
+    
+    # Updated: Single Select Dropdown
+    selected_sport = st.selectbox(
+        "Select League", 
+        ["ncaam", "nba", "nhl", "mlb", "nfl"], 
+        index=1
+    )
+    
     fetch_btn = st.button("Fetch Live Boosts")
 
     st.header("2. Projections Source")
@@ -250,18 +257,15 @@ with st.sidebar:
     current_proj_url = None
     
     if input_method == "Use Global/Public Projections":
-        if len(selected_sports) == 1:
-            sport_key = selected_sports[0].lower()
-            url = SPORT_PROJECTION_URLS.get(sport_key)
-            if url:
-                st.success(f"✅ Connected to {sport_key.upper()} Google Sheet")
-                current_proj_url = url
-            else:
-                st.warning(f"⚠️ No Google Sheet link configured for {sport_key.upper()}.")
-        elif len(selected_sports) > 1:
-            st.warning("⚠️ Please select only ONE sport to use Global Projections.")
+        # Simply get the URL for the selected sport
+        sport_key = selected_sport.lower()
+        url = SPORT_PROJECTION_URLS.get(sport_key)
+        
+        if url:
+            st.success(f"✅ Connected to {sport_key.upper()} Google Sheet")
+            current_proj_url = url
         else:
-            st.info("Select a sport to load projections.")
+            st.warning(f"⚠️ No Google Sheet link configured for {sport_key.upper()}.")
             
     elif input_method == "Upload CSV":
         st.info("Upload CSV with Name, Points (e.g. 'FPTS', 'Proj'), and Position.")
@@ -275,36 +279,30 @@ if 'boost_data' not in st.session_state:
     st.session_state.boost_data = pd.DataFrame()
 
 if fetch_btn:
-    if not selected_sports:
-        st.warning("Please select at least one sport.")
-    else:
-        all_results = []
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(selected_sports)) as executor:
-            future_to_sport = {executor.submit(fetch_data_for_sport, sport): sport for sport in selected_sports}
-            completed_count = 0
-            for future in concurrent.futures.as_completed(future_to_sport):
-                sport = future_to_sport[future]
-                try:
-                    data = future.result()
-                    all_results.extend(data)
-                    status_text.text(f"Fetched {sport.upper()}")
-                except Exception:
-                    pass
-                completed_count += 1
-                progress_bar.progress(completed_count / len(selected_sports))
-        status_text.empty()
-        progress_bar.empty()
+    all_results = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    # Simplified: No thread pool needed for single sport
+    try:
+        status_text.text(f"Fetching {selected_sport.upper()}...")
+        data = fetch_data_for_sport(selected_sport)
+        all_results.extend(data)
+    except Exception as e:
+        st.error(f"Error fetching data: {e}")
         
-        if all_results:
-            st.session_state.boost_data = pd.DataFrame(all_results)
-            # Show the date we actually found data for (useful for NFL)
-            found_dates = sorted(list(set(r['Date'] for r in all_results if 'Date' in r)))
-            date_msg = f" (Date: {found_dates[0]})" if len(found_dates) == 1 else ""
-            st.success(f"Fetched {len(st.session_state.boost_data)} players{date_msg}.")
-        else:
-            st.warning("No boosts found. (Checked next 7 days for NFL).")
+    progress_bar.progress(100)
+    status_text.empty()
+    progress_bar.empty()
+    
+    if all_results:
+        st.session_state.boost_data = pd.DataFrame(all_results)
+        # Show the date we actually found data for (useful for NFL)
+        found_dates = sorted(list(set(r['Date'] for r in all_results if 'Date' in r)))
+        date_msg = f" (Date: {found_dates[0]})" if len(found_dates) == 1 else ""
+        st.success(f"Fetched {len(st.session_state.boost_data)} players{date_msg}.")
+    else:
+        st.warning(f"No boosts found for {selected_sport.upper()}. (For NFL, we checked next 7 days).")
 
 if not st.session_state.boost_data.empty:
     df_boosts = st.session_state.boost_data
@@ -386,14 +384,14 @@ if not st.session_state.boost_data.empty:
                     
                     with tab2:
                         st.subheader("Optimizer Settings")
-                        use_bias = st.checkbox("Apply NFL Position Prioritization", value=(True if "NFL" in selected_sports else False))
                         
-                        if use_bias:
-                            col_a, col_b = st.columns(2)
-                            with col_a:
-                                wr_rb_bonus = st.slider("WR/RB Multiplier (Bonus)", 1.0, 1.5, 1.2, 0.05)
-                            with col_b:
-                                qb_penalty = st.slider("QB Multiplier (Penalty)", 0.5, 1.0, 0.8, 0.05)
+                        # --- AUTOMATIC NFL BIAS (NO UI) ---
+                        is_nfl = (selected_sport.upper() == "NFL")
+                        
+                        if is_nfl:
+                            st.info("🏈 **NFL Mode Active:** Automatically prioritizing WR/RB (+20%) and penalizing QB (-20%).")
+                            wr_rb_bonus = 1.2
+                            qb_penalty = 0.8
                         else:
                             wr_rb_bonus = 1.0
                             qb_penalty = 1.0
