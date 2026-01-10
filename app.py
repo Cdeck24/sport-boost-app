@@ -116,8 +116,13 @@ def fetch_data_for_sport(sport):
             if not players: continue
 
             for player in players:
+                # -- INJURY CHECK --
+                injury_status = player.get('injuryStatus', '')
+                if injury_status == 'O':
+                    continue # Skip OUT players entirely
+
                 full_name = f"{player['firstName']} {player['lastName']}"
-                boost_value = 0.0
+                boost_value = 0.0 # Default to 0.0 (No Boost)
                 position = player.get('position', 'Unknown')
                 details = player.get("details")
                 
@@ -130,13 +135,13 @@ def fetch_data_for_sport(sport):
                     except ValueError:
                         pass 
                 
-                # Always add the player, even if boost is just 1.0
                 sport_data.append({
                     "Sport": sport.upper(),
                     "Player Name": full_name,
                     "Position": position,
                     "Boost": boost_value,
-                    "Date": active_date_str 
+                    "Date": active_date_str,
+                    "Injury": injury_status # Store status for display/warning later
                 })
         except requests.RequestException:
             continue
@@ -197,6 +202,7 @@ def run_optimization(df, num_lineups=1):
                         p_pos = df.loc[i, "Position"]
                         p_proj_orig = df.loc[i, "Projection"]
                         p_boost = df.loc[i, "Boost"]
+                        p_injury = df.loc[i, "Injury"]
                         slot_add = SLOT_ADDERS[j]
                         eff_boost = p_boost + slot_add
                         final_pts = eff_boost * p_proj_orig 
@@ -205,6 +211,7 @@ def run_optimization(df, num_lineups=1):
                             "Slot Bonus": f"+{slot_add}x",
                             "Position": p_pos,
                             "Player Name": p_name,
+                            "Injury": p_injury, # Include in output
                             "Projection": p_proj_orig,
                             "Base Boost": p_boost,
                             "Eff. Boost": f"{eff_boost:.2f}x",
@@ -364,9 +371,9 @@ if not st.session_state.boost_data.empty:
                     
                     with tab1:
                         st.markdown("### Player Pool")
-                        merged_df['Est. Score'] = merged_df['Boost'] * merged_df['Projection']
-                        cols = ['Sport', 'Position', 'Player Name', 'Boost', 'Projection', 'Est. Score']
-                        st.dataframe(merged_df[cols].sort_values('Est. Score', ascending=False), use_container_width=True)
+                        # Add Injury to display if available
+                        cols = ['Sport', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection']
+                        st.dataframe(merged_df[cols].sort_values('Boost', ascending=False), use_container_width=True)
                         csv_data = merged_df[cols].to_csv(index=False)
                         st.download_button("Download Data CSV", csv_data, "player_pool.csv", "text/csv")
                     
@@ -401,9 +408,17 @@ if not st.session_state.boost_data.empty:
                             if lineups:
                                 for idx, lineup in enumerate(lineups):
                                     total_score = lineup['Points'].sum()
-                                    with st.expander(f"Lineup #{idx+1} | Total Score: {total_score:.2f}", expanded=(idx==0)):
+                                    
+                                    # Check for Questionable players
+                                    q_players = lineup[lineup['Injury'] == 'Q']['Player Name'].tolist()
+                                    warn_icon = "⚠️ " if q_players else ""
+                                    
+                                    with st.expander(f"{warn_icon}Lineup #{idx+1} | Total Score: {total_score:.2f}", expanded=(idx==0)):
+                                        if q_players:
+                                            st.warning(f"**Questionable Status:** {', '.join(q_players)}")
+                                        
                                         st.dataframe(
-                                            lineup, 
+                                            lineup.drop(columns=['Injury']), 
                                             column_config={
                                                 "Points": st.column_config.NumberColumn(format="%.2f"),
                                                 "Projection": st.column_config.NumberColumn(format="%.2f"),
