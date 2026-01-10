@@ -123,19 +123,39 @@ if st.button("Fetch Boosts"):
             df = df.sort_values(by="Boost Value", ascending=False)
             
             st.success(f"Found {len(df)} players with boosts.")
-            
-            # Interactive Data Table
-            st.dataframe(
-                df,
-                column_config={
-                    "Boost Value": st.column_config.NumberColumn(
-                        "Boost Multiplier",
-                        format="%.2fx" # Display as "1.50x"
-                    )
-                },
-                use_container_width=True,
-                hide_index=True
-            )
+
+            # Create tabs for "All" and each individual sport
+            sports_found = sorted(df['Sport'].unique())
+            # Create a list of tab names: "All Combined" + each sport name
+            tab_names = ["All Combined"] + sports_found
+            tabs = st.tabs(tab_names)
+
+            # Define a helper to display the dataframe with consistent formatting
+            def display_boost_table(dataframe):
+                st.dataframe(
+                    dataframe,
+                    column_config={
+                        "Boost Value": st.column_config.NumberColumn(
+                            "Boost Multiplier",
+                            format="%.2fx"
+                        )
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+            # Tab 1: All Combined
+            with tabs[0]:
+                st.write("### All Sports")
+                display_boost_table(df)
+
+            # Tabs 2+: Individual Sports
+            for i, sport in enumerate(sports_found):
+                with tabs[i + 1]:
+                    st.write(f"### {sport}")
+                    # Filter data for this specific sport
+                    sport_df = df[df['Sport'] == sport]
+                    display_boost_table(sport_df)
             
             # Download Button (replaces the automatic file creation)
             csv = df.to_csv(index=False).encode('utf-8')
