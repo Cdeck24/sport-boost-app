@@ -285,19 +285,10 @@ with st.sidebar:
     # --- 3. Optimizer Settings (Sidebar Global) ---
     st.header("3. Optimization Settings")
     
-    # --- AUTOMATIC NFL BIAS SETTINGS ---
-    is_nfl = (selected_sport.upper() == "NFL")
-    
-    # Default biases
+    # Bias defaults set to Neutral (1.0) for all sports
     wr_rb_bonus = 1.0
     qb_penalty = 1.0
-    
-    if is_nfl:
-        st.info("🏈 **NFL Mode:** WR/RB +20% | QB -20%")
-        wr_rb_bonus = 1.2
-        qb_penalty = 0.8
         
-    # Example: You could add more global overrides here if needed
     num_lineups = st.slider("Number of Lineups", 1, 10, 3)
 
 # --- Main Logic ---
