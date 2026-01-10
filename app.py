@@ -64,6 +64,7 @@ def fetch_data_for_sport(sport):
     letters = string.ascii_uppercase
     session = requests.Session()
     sport_data = []
+    seen_players = set() # Track seen players to avoid duplicates from overlapping letter searches
 
     # 1. Determine Date Strategy
     target_dates = [datetime.date.today()]
@@ -128,6 +129,13 @@ def fetch_data_for_sport(sport):
                     continue
 
                 full_name = f"{player['firstName']} {player['lastName']}"
+                
+                # -- DEDUP CHECK --
+                # If we've already seen this name in a previous letter query, skip it
+                if full_name in seen_players:
+                    continue
+                seen_players.add(full_name)
+
                 boost_value = 0.0 # Default to 0.0 (No Boost)
                 
                 details = player.get("details")
