@@ -121,9 +121,15 @@ def fetch_data_for_sport(sport):
                 if injury_status == 'O':
                     continue # Skip OUT players entirely
 
+                position = player.get('position', 'Unknown')
+
+                # -- NHL GOALIE FILTER --
+                if sport.lower() == 'nhl' and position == 'G':
+                    continue
+
                 full_name = f"{player['firstName']} {player['lastName']}"
                 boost_value = 0.0 # Default to 0.0 (No Boost)
-                position = player.get('position', 'Unknown')
+                
                 details = player.get("details")
                 
                 # Check for explicit boost
@@ -135,6 +141,7 @@ def fetch_data_for_sport(sport):
                     except ValueError:
                         pass 
                 
+                # Always add the player, even if boost is just 0.0
                 sport_data.append({
                     "Sport": sport.upper(),
                     "Player Name": full_name,
