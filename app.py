@@ -21,21 +21,24 @@ def normalize_name(name):
     Robust normalization for names (especially NFL).
     Removes suffixes like Jr, III and strips punctuation to ensure 'Patrick Mahomes II' matches 'Patrick Mahomes'.
     """
-    # 1. Lowercase
     n = str(name).lower()
-    
-    # 2. Remove common suffixes (check for space + suffix to avoid partial matches)
     suffixes = [' jr', ' sr', ' ii', ' iii', ' iv', ' v', ' jr.', ' sr.']
     for suffix in suffixes:
         if n.endswith(suffix):
             n = n[:-len(suffix)]
             break
-            
-    # 3. Keep only alphanumeric chars (removes spaces, dots, hyphens, apostrophes)
-    # Examples: 
-    # "A.J. Brown" -> "ajbrown"
-    # "JuJu Smith-Schuster" -> "jujusmithschuster"
     return "".join(c for c in n if c.isalnum())
+
+def normalize_position(pos):
+    """Normalizes position strings (e.g., 'Wide Receiver' -> 'WR')."""
+    if not pos or pd.isna(pos):
+        return "UNKNOWN"
+    p = str(pos).upper().strip()
+    if "QUARTER" in p or p == "QB": return "QB"
+    if "WIDE" in p or "RECEIVER" in p or p == "WR": return "WR"
+    if "RUNNING" in p or "BACK" in p or p == "RB" or p == "HB": return "RB"
+    if "TIGHT" in p or p == "TE": return "TE"
+    return p
 
 def fetch_data_for_sport(sport, target_date):
     """Fetches player data for a specific sport on a specific date."""
@@ -64,6 +67,9 @@ def fetch_data_for_sport(sport, target_date):
             for player in players:
                 full_name = f"{player['firstName']} {player['lastName']}"
                 boost_value = None 
+                
+                # Attempt to get position from API (if available)
+                position = player.get('position', 'Unknown')
 
                 details = player.get("details")
                 if details and isinstance(details, list) and len(details) > 0 and "text" in details[0]:
@@ -78,6 +84,7 @@ def fetch_data_for_sport(sport, target_date):
                     sport_data.append({
                         "Sport": sport.upper(),
                         "Player Name": full_name,
+                        "Position": position,
                         "Boost": boost_value
                     })
                 
@@ -89,17 +96,15 @@ def fetch_data_for_sport(sport, target_date):
 def run_optimization(df, num_lineups=1):
     """
     Runs an Assignment Problem solver.
-    Assigns 5 players to 5 specific slots to maximize total score.
-    Slot Multipliers: +2.0, +1.8, +1.6, +1.4, +1.2
+    Uses 'Optimization Score' to maximize value.
+    Assigns 5 players to 5 specific slots.
     """
-    # 1. Clean Data: Remove duplicates (keep highest Base Score)
-    # We need a temporary base score for sorting duplicates
-    df['Temp_Score'] = df['Boost'] * df['Projection']
-    df = df.sort_values('Temp_Score', ascending=False)
+    # 1. Clean Data: Remove duplicates (keep highest Optimization Score)
+    df = df.sort_values('Optimization Score', ascending=False)
     df = df.drop_duplicates(subset=['Player Name'], keep='first').reset_index(drop=True)
     
     # Constants
-    SLOT_ADDERS = [2.0, 1.8, 1.6, 1.4, 1.2] # The fixed multipliers for Slot 1 to 5
+    SLOT_ADDERS = [2.0, 1.8, 1.6, 1.4, 1.2]
     NUM_SLOTS = len(SLOT_ADDERS)
     
     prob = pulp.LpProblem("SlotOptimizer", pulp.LpMaximize)
@@ -109,41 +114,41 @@ def run_optimization(df, num_lineups=1):
     slot_indices = list(range(NUM_SLOTS))
     
     # --- Variables ---
-    # x[i][j] = 1 if player i is in slot j
     x = pulp.LpVariable.dicts("x", (player_indices, slot_indices), cat="Binary")
-    
-    # y[i] = 1 if player i is selected (in ANY slot)
     y = pulp.LpVariable.dicts("y", player_indices, cat="Binary")
     
     # --- Objective ---
-    # Maximize sum of ( (Boost + Slot_Adder) * Projection )
+    # Maximize sum of weighted optimization scores
     obj_terms = []
     for i in player_indices:
         for j in slot_indices:
-            # Calculate points for this specific player in this specific slot
-            effective_boost = df.loc[i, 'Boost'] + SLOT_ADDERS[j]
-            points = effective_boost * df.loc[i, 'Projection']
+            # We use the Optimization Score (which might have position bias applied)
+            # The boost logic applies to the RAW boost, but the bias applies to the base projection
+            
+            # Re-calculate effective points for the solver using the Adjusted Projection
+            # Effective Points = (Boost + SlotBonus) * Adjusted_Projection
+            
+            # Retrieve parameters
+            raw_boost = df.loc[i, 'Boost']
+            adj_proj = df.loc[i, 'Adjusted Projection'] # This has the position bias
+            slot_add = SLOT_ADDERS[j]
+            
+            points = (raw_boost + slot_add) * adj_proj
             obj_terms.append(points * x[i][j])
             
     prob += pulp.lpSum(obj_terms)
     
     # --- Constraints ---
-    
-    # 1. Each slot must have exactly 1 player
     for j in slot_indices:
         prob += pulp.lpSum([x[i][j] for i in player_indices]) == 1
         
-    # 2. Link x and y: If player is in a slot, y must be 1. If not, y is 0.
-    # Also ensures a player can only be in ONE slot max.
     for i in player_indices:
         prob += pulp.lpSum([x[i][j] for j in slot_indices]) == y[i]
         
-    # 3. Total players selected must equal Number of Slots (5)
     prob += pulp.lpSum([y[i] for i in player_indices]) == NUM_SLOTS
 
     generated_lineups = []
 
-    # --- Solve Loop ---
     for n in range(num_lineups):
         prob.solve(pulp.PULP_CBC_CMD(msg=0))
         
@@ -151,38 +156,33 @@ def run_optimization(df, num_lineups=1):
             lineup_data = []
             selected_player_indices = []
             
-            # Extract result
             for j in slot_indices:
                 for i in player_indices:
                     if x[i][j].varValue == 1.0:
                         selected_player_indices.append(i)
                         
                         p_name = df.loc[i, "Player Name"]
-                        p_proj = df.loc[i, "Projection"]
+                        p_pos = df.loc[i, "Position"]
+                        p_proj_orig = df.loc[i, "Projection"]
                         p_boost = df.loc[i, "Boost"]
                         slot_add = SLOT_ADDERS[j]
                         eff_boost = p_boost + slot_add
-                        final_pts = eff_boost * p_proj
+                        final_pts = eff_boost * p_proj_orig # Display TRUE points, not biased points
                         
                         lineup_data.append({
                             "Slot": j + 1,
                             "Slot Bonus": f"+{slot_add}x",
+                            "Position": p_pos,
                             "Player Name": p_name,
-                            "Projection": p_proj,
+                            "Projection": p_proj_orig,
                             "Base Boost": p_boost,
                             "Eff. Boost": f"{eff_boost:.2f}x",
                             "Points": final_pts
                         })
             
-            # Create DF and Sort by Slot
-            lineup_df = pd.DataFrame(lineup_data)
-            lineup_df = lineup_df.sort_values(by="Slot")
+            lineup_df = pd.DataFrame(lineup_data).sort_values(by="Slot")
             generated_lineups.append(lineup_df)
-            
-            # Constraint: Exclude this specific SET of players from appearing again
-            # We enforce that the sum of y variables for these specific players must be <= 4
             prob += pulp.lpSum([y[i] for i in selected_player_indices]) <= NUM_SLOTS - 1
-            
         else:
             break
 
@@ -191,28 +191,18 @@ def run_optimization(df, num_lineups=1):
 # --- Sidebar: Configuration ---
 with st.sidebar:
     st.header("1. Fetch Boosts")
-    selected_sports = st.multiselect(
-        "Select Leagues",
-        ["ncaam", "nba", "nhl", "mlb", "nfl"], 
-        default=["nba"]
-    )
-    
-    # Added Date Picker
+    selected_sports = st.multiselect("Select Leagues", ["ncaam", "nba", "nhl", "mlb", "nfl"], default=["nba"])
     target_date = st.date_input("Select Date", datetime.date.today())
-    
     fetch_btn = st.button("Fetch Live Boosts")
 
     st.header("2. Upload Projections")
-    st.info("Upload a CSV with columns: `Player Name` and `Fantasy Points`.")
+    st.info("Upload CSV with `Player Name`, `Fantasy Points`, and optional `Position`.")
     uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
 
 # --- Main Logic ---
-
-# Initialize session state
 if 'boost_data' not in st.session_state:
     st.session_state.boost_data = pd.DataFrame()
 
-# Step 1: Fetch Data
 if fetch_btn:
     if not selected_sports:
         st.warning("Please select at least one sport.")
@@ -220,14 +210,9 @@ if fetch_btn:
         all_results = []
         progress_bar = st.progress(0)
         status_text = st.empty()
-        
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(selected_sports)) as executor:
-            # Pass the target_date to the fetch function
             future_to_sport = {executor.submit(fetch_data_for_sport, sport, target_date): sport for sport in selected_sports}
-            
             completed_count = 0
-            total_sports = len(selected_sports)
-            
             for future in concurrent.futures.as_completed(future_to_sport):
                 sport = future_to_sport[future]
                 try:
@@ -237,8 +222,7 @@ if fetch_btn:
                 except Exception:
                     pass
                 completed_count += 1
-                progress_bar.progress(completed_count / total_sports)
-
+                progress_bar.progress(completed_count / len(selected_sports))
         status_text.empty()
         progress_bar.empty()
         
@@ -248,78 +232,81 @@ if fetch_btn:
         else:
             st.warning(f"No boosts found for {target_date}.")
 
-# Step 2: Merge & Display
 if not st.session_state.boost_data.empty:
     df_boosts = st.session_state.boost_data
     
-    # -- Handle Projections Merge --
     if uploaded_file is not None:
         try:
             df_proj = pd.read_csv(uploaded_file)
-            
-            # Normalize column names
             df_proj.columns = [c.strip() for c in df_proj.columns]
             
-            # Identify critical columns
             name_col = next((c for c in df_proj.columns if "player" in c.lower()), None)
             points_col = next((c for c in df_proj.columns if "fantasy" in c.lower()), None)
+            # Try to find position column in CSV
+            pos_col = next((c for c in df_proj.columns if "pos" in c.lower()), None)
 
             if name_col and points_col:
-                # Normalize names for merging
                 df_boosts['join_key'] = df_boosts['Player Name'].apply(normalize_name)
                 df_proj['join_key'] = df_proj[name_col].apply(normalize_name)
                 
-                # Merge
                 merged_df = pd.merge(df_boosts, df_proj, on='join_key', how='inner')
                 
                 if merged_df.empty:
-                    st.error("No players matched! This is usually due to name spelling differences.")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.warning("Boost Names (First 5)")
-                        st.write(df_boosts['Player Name'].head().tolist())
-                    with col2:
-                        st.warning("Projection Names (First 5)")
-                        st.write(df_proj[name_col].head().tolist())
+                    st.error("No players matched!")
                 else:
-                    # Standardize Projection Column Name for Optimizer
+                    # Rename standard columns
                     merged_df = merged_df.rename(columns={points_col: 'Projection'})
                     
-                    # Filter: Remove players with 0, empty, or invalid projections
+                    # Consolidate Position: Prefer CSV, fallback to API, fallback to Unknown
+                    if pos_col:
+                        merged_df['Position'] = merged_df[pos_col].fillna(merged_df['Position'])
+                    
+                    merged_df['Position'] = merged_df['Position'].apply(normalize_position)
+                    
+                    # Filter invalid projections
                     merged_df['Projection'] = pd.to_numeric(merged_df['Projection'], errors='coerce').fillna(0)
                     merged_df = merged_df[merged_df['Projection'] > 0]
 
-                    # Calculate a "Base Score" just for sorting the Data Browser list
-                    # (Note: Actual score depends on slot, this is just for reference)
-                    merged_df['Base Score (No Slot)'] = merged_df['Boost'] * merged_df['Projection']
-                    
-                    final_df = merged_df.sort_values(by="Base Score (No Slot)", ascending=False)
-                    
-                    # --- TABS INTERFACE ---
                     tab1, tab2 = st.tabs(["📊 Data Browser", "🚀 Lineup Optimizer"])
                     
                     with tab1:
                         st.markdown("### Player Pool")
-                        cols_to_show = ['Sport', 'Player Name', 'Boost', 'Projection', 'Base Score (No Slot)']
-                        st.dataframe(final_df[cols_to_show], use_container_width=True)
+                        # Display raw stats
+                        merged_df['Est. Score'] = merged_df['Boost'] * merged_df['Projection']
+                        cols = ['Sport', 'Position', 'Player Name', 'Boost', 'Projection', 'Est. Score']
+                        st.dataframe(merged_df[cols].sort_values('Est. Score', ascending=False), use_container_width=True)
                     
                     with tab2:
                         st.subheader("Optimizer Settings")
-                        st.markdown("""
-                        **Slot Rules:**
-                        - **Slot 1:** +2.0x
-                        - **Slot 2:** +1.8x
-                        - **Slot 3:** +1.6x
-                        - **Slot 4:** +1.4x
-                        - **Slot 5:** +1.2x
-                        """)
                         
-                        num_lineups = st.slider("Number of Lineups to Generate", 1, 10, 3)
+                        # -- NFL BIAS SETTINGS --
+                        use_bias = st.checkbox("Apply NFL Position Prioritization", value=(True if "NFL" in selected_sports else False))
+                        
+                        if use_bias:
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                wr_rb_bonus = st.slider("WR/RB Multiplier (Bonus)", 1.0, 1.5, 1.2, 0.05, help="Increases WR/RB projection for optimization logic only.")
+                            with col_b:
+                                qb_penalty = st.slider("QB Multiplier (Penalty)", 0.5, 1.0, 0.8, 0.05, help="Reduces QB projection for optimization logic only.")
+                        else:
+                            wr_rb_bonus = 1.0
+                            qb_penalty = 1.0
+
+                        # Calculate "Adjusted Projection" for the Optimizer
+                        def get_bias_multiplier(row):
+                            if row['Position'] in ['WR', 'RB']: return wr_rb_bonus
+                            if row['Position'] == 'QB': return qb_penalty
+                            return 1.0
+
+                        merged_df['Bias'] = merged_df.apply(get_bias_multiplier, axis=1)
+                        merged_df['Adjusted Projection'] = merged_df['Projection'] * merged_df['Bias']
+                        merged_df['Optimization Score'] = merged_df['Boost'] * merged_df['Adjusted Projection']
+
+                        st.divider()
+                        num_lineups = st.slider("Number of Lineups", 1, 10, 3)
 
                         if st.button("Generate Optimal Lineups"):
-                            # Use the entire pool for optimization
-                            lineups = run_optimization(final_df, num_lineups)
-                            
+                            lineups = run_optimization(merged_df, num_lineups)
                             if lineups:
                                 for idx, lineup in enumerate(lineups):
                                     total_score = lineup['Points'].sum()
@@ -334,18 +321,12 @@ if not st.session_state.boost_data.empty:
                                             hide_index=True
                                         )
                             else:
-                                st.error("Could not generate a lineup. Ensure you have enough players.")
-
+                                st.error("Could not generate lineup.")
             else:
-                st.error("Could not find 'Player' or 'Fantasy' columns in your CSV.")
-                st.write("Columns found:", df_proj.columns.tolist())
-                
+                st.error("Could not find required columns in CSV.")
         except Exception as e:
-            st.error(f"Error reading CSV: {e}")
-            
+            st.error(f"Error: {e}")
     else:
-        st.info("Upload a CSV to enable Projections & Optimization.")
-        st.dataframe(df_boosts, use_container_width=True)
-
+        st.info("Upload CSV to continue.")
 else:
     st.write("Waiting for data fetch...")
