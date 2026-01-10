@@ -37,10 +37,10 @@ def normalize_name(name):
     # "JuJu Smith-Schuster" -> "jujusmithschuster"
     return "".join(c for c in n if c.isalnum())
 
-def fetch_data_for_sport(sport):
-    """Fetches player data for a specific sport."""
+def fetch_data_for_sport(sport, target_date):
+    """Fetches player data for a specific sport on a specific date."""
     letters = string.ascii_uppercase
-    current_date = str(datetime.date.today())
+    current_date = str(target_date)
     sport_data = []
     session = requests.Session()
     
@@ -196,6 +196,10 @@ with st.sidebar:
         ["ncaam", "nba", "nhl", "mlb", "nfl"], 
         default=["nba"]
     )
+    
+    # Added Date Picker
+    target_date = st.date_input("Select Date", datetime.date.today())
+    
     fetch_btn = st.button("Fetch Live Boosts")
 
     st.header("2. Upload Projections")
@@ -218,7 +222,8 @@ if fetch_btn:
         status_text = st.empty()
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(selected_sports)) as executor:
-            future_to_sport = {executor.submit(fetch_data_for_sport, sport): sport for sport in selected_sports}
+            # Pass the target_date to the fetch function
+            future_to_sport = {executor.submit(fetch_data_for_sport, sport, target_date): sport for sport in selected_sports}
             
             completed_count = 0
             total_sports = len(selected_sports)
@@ -239,9 +244,9 @@ if fetch_btn:
         
         if all_results:
             st.session_state.boost_data = pd.DataFrame(all_results)
-            st.success(f"Fetched {len(st.session_state.boost_data)} players.")
+            st.success(f"Fetched {len(st.session_state.boost_data)} players for {target_date}.")
         else:
-            st.warning("No boosts found.")
+            st.warning(f"No boosts found for {target_date}.")
 
 # Step 2: Merge & Display
 if not st.session_state.boost_data.empty:
