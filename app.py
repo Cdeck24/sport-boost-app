@@ -285,6 +285,10 @@ if not st.session_state.boost_data.empty:
                     # Standardize Projection Column Name for Optimizer
                     merged_df = merged_df.rename(columns={points_col: 'Projection'})
                     
+                    # Filter: Remove players with 0, empty, or invalid projections
+                    merged_df['Projection'] = pd.to_numeric(merged_df['Projection'], errors='coerce').fillna(0)
+                    merged_df = merged_df[merged_df['Projection'] > 0]
+
                     # Calculate a "Base Score" just for sorting the Data Browser list
                     # (Note: Actual score depends on slot, this is just for reference)
                     merged_df['Base Score (No Slot)'] = merged_df['Boost'] * merged_df['Projection']
