@@ -17,8 +17,25 @@ This tool fetches live **Boost Multipliers** from the API and allows you to merg
 
 # --- Helper Functions ---
 def normalize_name(name):
-    """Simple helper to normalize names for better matching."""
-    return str(name).lower().strip().replace(".", "").replace("'", "")
+    """
+    Robust normalization for names (especially NFL).
+    Removes suffixes like Jr, III and strips punctuation to ensure 'Patrick Mahomes II' matches 'Patrick Mahomes'.
+    """
+    # 1. Lowercase
+    n = str(name).lower()
+    
+    # 2. Remove common suffixes (check for space + suffix to avoid partial matches)
+    suffixes = [' jr', ' sr', ' ii', ' iii', ' iv', ' v', ' jr.', ' sr.']
+    for suffix in suffixes:
+        if n.endswith(suffix):
+            n = n[:-len(suffix)]
+            break
+            
+    # 3. Keep only alphanumeric chars (removes spaces, dots, hyphens, apostrophes)
+    # Examples: 
+    # "A.J. Brown" -> "ajbrown"
+    # "JuJu Smith-Schuster" -> "jujusmithschuster"
+    return "".join(c for c in n if c.isalnum())
 
 def fetch_data_for_sport(sport):
     """Fetches player data for a specific sport."""
@@ -250,55 +267,65 @@ if not st.session_state.boost_data.empty:
                 # Merge
                 merged_df = pd.merge(df_boosts, df_proj, on='join_key', how='inner')
                 
-                # Standardize Projection Column Name for Optimizer
-                merged_df = merged_df.rename(columns={points_col: 'Projection'})
-                
-                # Calculate a "Base Score" just for sorting the Data Browser list
-                # (Note: Actual score depends on slot, this is just for reference)
-                merged_df['Base Score (No Slot)'] = merged_df['Boost'] * merged_df['Projection']
-                
-                final_df = merged_df.sort_values(by="Base Score (No Slot)", ascending=False)
-                
-                # --- TABS INTERFACE ---
-                tab1, tab2 = st.tabs(["📊 Data Browser", "🚀 Lineup Optimizer"])
-                
-                with tab1:
-                    st.markdown("### Player Pool")
-                    cols_to_show = ['Sport', 'Player Name', 'Boost', 'Projection', 'Base Score (No Slot)']
-                    st.dataframe(final_df[cols_to_show], use_container_width=True)
-                
-                with tab2:
-                    st.subheader("Optimizer Settings")
-                    st.markdown("""
-                    **Slot Rules:**
-                    - **Slot 1:** +2.0x
-                    - **Slot 2:** +1.8x
-                    - **Slot 3:** +1.6x
-                    - **Slot 4:** +1.4x
-                    - **Slot 5:** +1.2x
-                    """)
+                if merged_df.empty:
+                    st.error("No players matched! This is usually due to name spelling differences.")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.warning("Boost Names (First 5)")
+                        st.write(df_boosts['Player Name'].head().tolist())
+                    with col2:
+                        st.warning("Projection Names (First 5)")
+                        st.write(df_proj[name_col].head().tolist())
+                else:
+                    # Standardize Projection Column Name for Optimizer
+                    merged_df = merged_df.rename(columns={points_col: 'Projection'})
                     
-                    num_lineups = st.slider("Number of Lineups to Generate", 1, 10, 3)
-
-                    if st.button("Generate Optimal Lineups"):
-                        # Use the entire pool for optimization
-                        lineups = run_optimization(final_df, num_lineups)
+                    # Calculate a "Base Score" just for sorting the Data Browser list
+                    # (Note: Actual score depends on slot, this is just for reference)
+                    merged_df['Base Score (No Slot)'] = merged_df['Boost'] * merged_df['Projection']
+                    
+                    final_df = merged_df.sort_values(by="Base Score (No Slot)", ascending=False)
+                    
+                    # --- TABS INTERFACE ---
+                    tab1, tab2 = st.tabs(["📊 Data Browser", "🚀 Lineup Optimizer"])
+                    
+                    with tab1:
+                        st.markdown("### Player Pool")
+                        cols_to_show = ['Sport', 'Player Name', 'Boost', 'Projection', 'Base Score (No Slot)']
+                        st.dataframe(final_df[cols_to_show], use_container_width=True)
+                    
+                    with tab2:
+                        st.subheader("Optimizer Settings")
+                        st.markdown("""
+                        **Slot Rules:**
+                        - **Slot 1:** +2.0x
+                        - **Slot 2:** +1.8x
+                        - **Slot 3:** +1.6x
+                        - **Slot 4:** +1.4x
+                        - **Slot 5:** +1.2x
+                        """)
                         
-                        if lineups:
-                            for idx, lineup in enumerate(lineups):
-                                total_score = lineup['Points'].sum()
-                                with st.expander(f"Lineup #{idx+1} | Total Score: {total_score:.2f}", expanded=(idx==0)):
-                                    st.dataframe(
-                                        lineup, 
-                                        column_config={
-                                            "Points": st.column_config.NumberColumn(format="%.2f"),
-                                            "Projection": st.column_config.NumberColumn(format="%.2f"),
-                                        },
-                                        use_container_width=True,
-                                        hide_index=True
-                                    )
-                        else:
-                            st.error("Could not generate a lineup. Ensure you have enough players.")
+                        num_lineups = st.slider("Number of Lineups to Generate", 1, 10, 3)
+
+                        if st.button("Generate Optimal Lineups"):
+                            # Use the entire pool for optimization
+                            lineups = run_optimization(final_df, num_lineups)
+                            
+                            if lineups:
+                                for idx, lineup in enumerate(lineups):
+                                    total_score = lineup['Points'].sum()
+                                    with st.expander(f"Lineup #{idx+1} | Total Score: {total_score:.2f}", expanded=(idx==0)):
+                                        st.dataframe(
+                                            lineup, 
+                                            column_config={
+                                                "Points": st.column_config.NumberColumn(format="%.2f"),
+                                                "Projection": st.column_config.NumberColumn(format="%.2f"),
+                                            },
+                                            use_container_width=True,
+                                            hide_index=True
+                                        )
+                            else:
+                                st.error("Could not generate a lineup. Ensure you have enough players.")
 
             else:
                 st.error("Could not find 'Player' or 'Fantasy' columns in your CSV.")
