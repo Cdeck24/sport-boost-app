@@ -117,9 +117,11 @@ def fetch_data_for_sport(sport):
 
             for player in players:
                 full_name = f"{player['firstName']} {player['lastName']}"
-                boost_value = None 
+                boost_value = 1.0 # Default to 1.0x (Standard)
                 position = player.get('position', 'Unknown')
                 details = player.get("details")
+                
+                # Check for explicit boost
                 if details and isinstance(details, list) and len(details) > 0 and "text" in details[0]:
                     text = details[0]["text"]
                     boost_str = text.replace("x", "").replace("+", "").strip()
@@ -128,14 +130,14 @@ def fetch_data_for_sport(sport):
                     except ValueError:
                         pass 
                 
-                if boost_value is not None:
-                    sport_data.append({
-                        "Sport": sport.upper(),
-                        "Player Name": full_name,
-                        "Position": position,
-                        "Boost": boost_value,
-                        "Date": active_date_str 
-                    })
+                # Always add the player, even if boost is just 1.0
+                sport_data.append({
+                    "Sport": sport.upper(),
+                    "Player Name": full_name,
+                    "Position": position,
+                    "Boost": boost_value,
+                    "Date": active_date_str 
+                })
         except requests.RequestException:
             continue
             
@@ -320,21 +322,17 @@ if not st.session_state.boost_data.empty:
             df_proj.columns = [c.strip() for c in df_proj.columns]
             
             # --- Special Logic for Split Names (NFL) ---
-            # Search for specific "First Name" and "Last Name" columns if "Player Name" isn't obvious
             first_name_col = find_col(df_proj.columns, ["first name", "firstname", "first"])
             last_name_col = find_col(df_proj.columns, ["last name", "lastname", "last"])
             
             name_col = None
-            
             if first_name_col and last_name_col:
-                # Combine them into a new temporary column
                 df_proj['Calculated_Full_Name'] = df_proj[first_name_col].astype(str) + " " + df_proj[last_name_col].astype(str)
                 name_col = 'Calculated_Full_Name'
             else:
-                # Fallback to standard search
                 name_col = find_col(df_proj.columns, ["player", "name", "who"])
 
-            # Updated Points Search to include 'ppg' for your sheet
+            # Updated Points Search
             points_col = find_col(df_proj.columns, ["ppg", "fantasy", "proj", "fpts", "pts", "avg", "fp"])
             pos_col = find_col(df_proj.columns, ["pos", "position"])
 
