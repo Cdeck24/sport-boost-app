@@ -4,7 +4,7 @@ import datetime
 import string
 import pandas as pd
 import concurrent.futures
-import pulp  # New library for optimization
+import pulp
 
 # --- Page Configuration ---
 st.set_page_config(page_title="Player Boost & Optimizer", layout="wide")
@@ -69,10 +69,11 @@ def fetch_data_for_sport(sport):
 
     return sport_data
 
-def run_optimization(df, roster_size, salary_cap=None):
+def run_optimization(df, roster_size):
     """
     Runs a linear programming solver to find the optimal lineup.
-    df: DataFrame containing 'Player Name', 'Total Score', and optionally 'Salary'
+    df: DataFrame containing 'Player Name' and 'Total Score'
+    Ignores salary completely.
     """
     prob = pulp.LpProblem("FantasyOptimizer", pulp.LpMaximize)
     
@@ -86,10 +87,6 @@ def run_optimization(df, roster_size, salary_cap=None):
     
     # Constraint: Roster Size
     prob += pulp.lpSum([player_vars[i] for i in player_indices]) == roster_size
-    
-    # Constraint: Salary Cap (if column exists and cap is set)
-    if salary_cap is not None and "Salary" in df.columns:
-        prob += pulp.lpSum([df.loc[i, "Salary"] * player_vars[i] for i in player_indices]) <= salary_cap
 
     prob.solve(pulp.PULP_CBC_CMD(msg=0))
     
@@ -110,7 +107,7 @@ with st.sidebar:
     fetch_btn = st.button("Fetch Live Boosts")
 
     st.header("2. Upload Projections")
-    st.info("Upload a CSV with columns: `Player Name`, `Projection` (and optionally `Salary`).")
+    st.info("Upload a CSV with columns: `Player Name` and `Fantasy Points`.")
     uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
 
 # --- Main Logic ---
@@ -166,10 +163,9 @@ if not st.session_state.boost_data.empty:
             # Normalize column names for easier matching
             df_proj.columns = [c.strip() for c in df_proj.columns]
             
-            # Identify critical columns
+            # Identify critical columns (Case insensitive partial match)
             name_col = next((c for c in df_proj.columns if "player" in c.lower()), None)
             points_col = next((c for c in df_proj.columns if "fantasy" in c.lower()), None)
-            salary_col = next((c for c in df_proj.columns if "salary" in c.lower()), None)
 
             if name_col and points_col:
                 # Normalize names for merging
@@ -184,12 +180,6 @@ if not st.session_state.boost_data.empty:
                 
                 # Clean up columns for display
                 cols_to_show = ['Sport', 'Player Name', 'Boost', points_col, 'Total Score']
-                
-                # Safe handling of Salary column
-                if salary_col:
-                    merged_df.rename(columns={salary_col: "Salary"}, inplace=True)
-                    cols_to_show.append("Salary")
-                
                 final_df = merged_df[cols_to_show].sort_values(by="Total Score", ascending=False)
                 
                 # --- TABS INTERFACE ---
@@ -204,18 +194,17 @@ if not st.session_state.boost_data.empty:
                     with col1:
                         roster_size = st.number_input("Roster Size", min_value=1, max_value=20, value=5)
                     with col2:
-                        has_salary = "Salary" in final_df.columns
-                        cap = st.number_input("Salary Cap", min_value=0, value=50000, disabled=not has_salary)
+                        st.write("Top lineups generated based on Total Score (Boost * Projection).")
                     
                     if st.button("Generate Optimal Lineup"):
-                        salary_limit = cap if has_salary else None
-                        optimal_lineup = run_optimization(final_df, roster_size, salary_limit)
+                        optimal_lineup = run_optimization(final_df, roster_size)
                         
                         if optimal_lineup is not None:
-                            st.success(f"Optimal Lineup Found! Total Score: {optimal_lineup['Total Score'].sum():.2f}")
+                            total_score = optimal_lineup['Total Score'].sum()
+                            st.success(f"Optimal Lineup Found! Total Score: {total_score:.2f}")
                             st.dataframe(optimal_lineup, use_container_width=True)
                         else:
-                            st.error("Could not find a feasible lineup. Try increasing the salary cap or roster size.")
+                            st.error("Could not generate a lineup. Ensure you have enough players.")
 
             else:
                 st.error("Could not find 'Player' or 'Fantasy' columns in your CSV. Please check your headers.")
