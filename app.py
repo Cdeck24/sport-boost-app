@@ -282,6 +282,24 @@ with st.sidebar:
         st.info("Copy table from website and paste here.")
         pasted_text = st.text_area("Paste Data Here", height=150, placeholder="Player Name   FPTS   Position...")
 
+    # --- 3. Optimizer Settings (Sidebar Global) ---
+    st.header("3. Optimization Settings")
+    
+    # --- AUTOMATIC NFL BIAS SETTINGS ---
+    is_nfl = (selected_sport.upper() == "NFL")
+    
+    # Default biases
+    wr_rb_bonus = 1.0
+    qb_penalty = 1.0
+    
+    if is_nfl:
+        st.info("🏈 **NFL Mode:** WR/RB +20% | QB -20%")
+        wr_rb_bonus = 1.2
+        qb_penalty = 0.8
+        
+    # Example: You could add more global overrides here if needed
+    num_lineups = st.slider("Number of Lineups", 1, 10, 3)
+
 # --- Main Logic ---
 if 'boost_data' not in st.session_state:
     st.session_state.boost_data = pd.DataFrame()
@@ -380,42 +398,52 @@ if not st.session_state.boost_data.empty:
                     merged_df['Projection'] = pd.to_numeric(merged_df['Projection'], errors='coerce').fillna(0)
                     merged_df = merged_df[merged_df['Projection'] > 0]
 
-                    tab1, tab2 = st.tabs(["📊 Data Browser", "🚀 Lineup Optimizer"])
+                    # --- PRE-CALCULATE OPTIMIZATION SCORES (GLOBAL) ---
+                    # We do this here so the "Best Value" tab can see the unbiased/biased scores immediately
+                    def get_bias_multiplier(row):
+                        if row['Position'] in ['WR', 'RB']: return wr_rb_bonus
+                        if row['Position'] == 'QB': return qb_penalty
+                        return 1.0
+
+                    merged_df['Bias'] = merged_df.apply(get_bias_multiplier, axis=1)
+                    merged_df['Adjusted Projection'] = merged_df['Projection'] * merged_df['Bias']
+                    # Optimization Score includes Boost * Adjusted Projection
+                    merged_df['Optimization Score'] = merged_df['Boost'] * merged_df['Adjusted Projection']
+                    # Est. Score is the raw "Boost * Projection" (No position bias)
+                    merged_df['Est. Score'] = merged_df['Boost'] * merged_df['Projection']
+
+                    # --- TABS INTERFACE ---
+                    tab1, tab2, tab3 = st.tabs(["📊 Data Browser", "💎 Best Value", "🚀 Lineup Optimizer"])
                     
+                    # Tab 1: Raw Data
                     with tab1:
-                        st.markdown("### Player Pool")
-                        # Add Injury to display if available
-                        cols = ['Sport', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection']
-                        st.dataframe(merged_df[cols].sort_values('Boost', ascending=False), use_container_width=True)
+                        st.markdown("### Player Pool (Raw Data)")
+                        cols = ['Sport', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Est. Score']
+                        st.dataframe(merged_df[cols].sort_values('Est. Score', ascending=False), use_container_width=True)
                         csv_data = merged_df[cols].to_csv(index=False)
                         st.download_button("Download Data CSV", csv_data, "player_pool.csv", "text/csv")
-                    
+
+                    # Tab 2: Best Value (Optimized View)
                     with tab2:
-                        st.subheader("Optimizer Settings")
+                        st.markdown("### Top Value Plays")
+                        st.markdown("""
+                        This list ranks players by their **Optimization Score**. 
+                        It accounts for your League Settings (e.g., WR/RB Bonus in NFL) and the Boost Multiplier.
+                        """)
                         
-                        # --- AUTOMATIC NFL BIAS (NO UI) ---
-                        is_nfl = (selected_sport.upper() == "NFL")
-                        
-                        if is_nfl:
-                            st.info("🏈 **NFL Mode Active:** Automatically prioritizing WR/RB (+20%) and penalizing QB (-20%).")
-                            wr_rb_bonus = 1.2
-                            qb_penalty = 0.8
-                        else:
-                            wr_rb_bonus = 1.0
-                            qb_penalty = 1.0
+                        value_cols = ['Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Adjusted Projection', 'Optimization Score']
+                        st.dataframe(
+                            merged_df[value_cols].sort_values('Optimization Score', ascending=False).head(50), 
+                            use_container_width=True,
+                            column_config={
+                                "Optimization Score": st.column_config.NumberColumn(format="%.2f"),
+                                "Adjusted Projection": st.column_config.NumberColumn(format="%.2f")
+                            }
+                        )
 
-                        def get_bias_multiplier(row):
-                            if row['Position'] in ['WR', 'RB']: return wr_rb_bonus
-                            if row['Position'] == 'QB': return qb_penalty
-                            return 1.0
-
-                        merged_df['Bias'] = merged_df.apply(get_bias_multiplier, axis=1)
-                        merged_df['Adjusted Projection'] = merged_df['Projection'] * merged_df['Bias']
-                        merged_df['Optimization Score'] = merged_df['Boost'] * merged_df['Adjusted Projection']
-
-                        st.divider()
-                        num_lineups = st.slider("Number of Lineups", 1, 10, 3)
-
+                    # Tab 3: Optimizer
+                    with tab3:
+                        st.subheader("Generate Lineups")
                         if st.button("Generate Optimal Lineups"):
                             lineups = run_optimization(merged_df, num_lineups)
                             if lineups:
