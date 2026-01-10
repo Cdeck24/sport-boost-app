@@ -184,9 +184,11 @@ if not st.session_state.boost_data.empty:
                 
                 # Clean up columns for display
                 cols_to_show = ['Sport', 'Player Name', 'Boost', points_col, 'Total Score']
+                
+                # Safe handling of Salary column
                 if salary_col:
-                    cols_to_show.append(salary_col)
                     merged_df.rename(columns={salary_col: "Salary"}, inplace=True)
+                    cols_to_show.append("Salary")
                 
                 final_df = merged_df[cols_to_show].sort_values(by="Total Score", ascending=False)
                 
@@ -213,10 +215,10 @@ if not st.session_state.boost_data.empty:
                             st.success(f"Optimal Lineup Found! Total Score: {optimal_lineup['Total Score'].sum():.2f}")
                             st.dataframe(optimal_lineup, use_container_width=True)
                         else:
-                            st.error("Could not find a feasible lineup (check salary constraints).")
+                            st.error("Could not find a feasible lineup. Try increasing the salary cap or roster size.")
 
             else:
-                st.error("Could not automatically find 'Name' or 'Projection' columns in CSV.")
+                st.error("Could not find 'Player' or 'Fantasy' columns in your CSV. Please check your headers.")
                 st.write("Columns found:", df_proj.columns.tolist())
                 
         except Exception as e:
