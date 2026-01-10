@@ -319,8 +319,23 @@ if not st.session_state.boost_data.empty:
         try:
             df_proj.columns = [c.strip() for c in df_proj.columns]
             
-            name_col = find_col(df_proj.columns, ["player", "name", "who"])
-            points_col = find_col(df_proj.columns, ["fantasy", "proj", "fpts", "pts", "avg", "fp"])
+            # --- Special Logic for Split Names (NFL) ---
+            # Search for specific "First Name" and "Last Name" columns if "Player Name" isn't obvious
+            first_name_col = find_col(df_proj.columns, ["first name", "firstname", "first"])
+            last_name_col = find_col(df_proj.columns, ["last name", "lastname", "last"])
+            
+            name_col = None
+            
+            if first_name_col and last_name_col:
+                # Combine them into a new temporary column
+                df_proj['Calculated_Full_Name'] = df_proj[first_name_col].astype(str) + " " + df_proj[last_name_col].astype(str)
+                name_col = 'Calculated_Full_Name'
+            else:
+                # Fallback to standard search
+                name_col = find_col(df_proj.columns, ["player", "name", "who"])
+
+            # Updated Points Search to include 'ppg' for your sheet
+            points_col = find_col(df_proj.columns, ["ppg", "fantasy", "proj", "fpts", "pts", "avg", "fp"])
             pos_col = find_col(df_proj.columns, ["pos", "position"])
 
             if name_col and points_col:
@@ -331,6 +346,13 @@ if not st.session_state.boost_data.empty:
                 
                 if merged_df.empty:
                     st.error("No players matched! This usually means names didn't match or the date is wrong.")
+                    # Debug Info
+                    with st.expander("Debug: Show unmatched data"):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write("First 5 Boost Names:", df_boosts['Player Name'].head().tolist())
+                        with col2:
+                            st.write("First 5 Projection Names:", df_proj[name_col].head().tolist())
                 else:
                     merged_df = merged_df.rename(columns={points_col: 'Projection'})
                     if pos_col:
