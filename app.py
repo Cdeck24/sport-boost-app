@@ -7,9 +7,16 @@ import concurrent.futures
 import pulp
 import io
 
-# --- ⬇️ PASTE YOUR GOOGLE SHEET CSV LINK HERE ⬇️ ---
-# Example: "https://docs.google.com/spreadsheets/d/e/2PACX-.../pub?output=csv"
-GLOBAL_PROJECTIONS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?output=csv" 
+# --- ⬇️ PASTE YOUR GOOGLE SHEET CSV LINKS HERE ⬇️ ---
+# Map each sport to its specific Google Sheet CSV link
+# Example: "nba": "https://docs.google.com/spreadsheets/d/.../pub?output=csv"
+SPORT_PROJECTION_URLS = {
+    "nba": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=0&single=true&output=csv", 
+    "nfl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1180552482&single=true&output=csv",
+    "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv",
+    "mlb": "",
+    "ncaam": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1476893875&single=true&output=csv"
+}
 # ---------------------------------------------------
 
 # --- Page Configuration ---
@@ -169,19 +176,32 @@ with st.sidebar:
 
     st.header("2. Projections Source")
     
-    # Logic: If global URL exists, default to that, but allow override
+    # Logic: If ANY global URL exists, default to that, but allow override
     input_options = ["Upload CSV", "Paste Text"]
-    if GLOBAL_PROJECTIONS_URL:
+    if any(SPORT_PROJECTION_URLS.values()):
         input_options.insert(0, "Use Global/Public Projections")
     
     input_method = st.radio("Source", input_options)
     
     uploaded_file = None
     pasted_text = None
+    current_proj_url = None
     
     if input_method == "Use Global/Public Projections":
-        st.success("✅ Connected to Google Sheet")
-        st.caption("Data is pulled automatically from the configured URL.")
+        if len(selected_sports) == 1:
+            sport_key = selected_sports[0].lower()
+            url = SPORT_PROJECTION_URLS.get(sport_key)
+            if url:
+                st.success(f"✅ Connected to {sport_key.upper()} Google Sheet")
+                st.caption("Data is pulled automatically from the configured URL.")
+                current_proj_url = url
+            else:
+                st.warning(f"⚠️ No Google Sheet link configured for {sport_key.upper()}.")
+        elif len(selected_sports) > 1:
+            st.warning("⚠️ Please select only ONE sport to use Global Projections.")
+        else:
+            st.info("Select a sport to load projections.")
+            
     elif input_method == "Upload CSV":
         st.info("Upload CSV with Name, Points (e.g. 'FPTS', 'Proj'), and Position.")
         uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
@@ -228,9 +248,9 @@ if not st.session_state.boost_data.empty:
     error_msg = None
     
     # 1. Load Data based on Method
-    if input_method == "Use Global/Public Projections" and GLOBAL_PROJECTIONS_URL:
+    if input_method == "Use Global/Public Projections" and current_proj_url:
         try:
-            df_proj = pd.read_csv(GLOBAL_PROJECTIONS_URL)
+            df_proj = pd.read_csv(current_proj_url)
         except Exception as e:
             error_msg = f"Error reading Global URL: {e}"
             
