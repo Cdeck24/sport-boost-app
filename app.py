@@ -9,7 +9,7 @@ import io
 
 # --- ⬇️ PASTE YOUR GOOGLE SHEET CSV LINK HERE ⬇️ ---
 # Example: "https://docs.google.com/spreadsheets/d/e/2PACX-.../pub?output=csv"
-GLOBAL_PROJECTIONS_URL = "" 
+GLOBAL_PROJECTIONS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?output=csv" 
 # ---------------------------------------------------
 
 # --- Page Configuration ---
