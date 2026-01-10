@@ -8,8 +8,6 @@ import pulp
 import io
 
 # --- ⬇️ PASTE YOUR GOOGLE SHEET CSV LINKS HERE ⬇️ ---
-# Map each sport to its specific Google Sheet CSV link
-# Example: "nba": "https://docs.google.com/spreadsheets/d/.../pub?output=csv"
 SPORT_PROJECTION_URLS = {
     "nba": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=0&single=true&output=csv", 
     "nfl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1180552482&single=true&output=csv",
@@ -37,6 +35,7 @@ def normalize_name(name):
         if n.endswith(suffix):
             n = n[:-len(suffix)]
             break
+    # Remove punctuation like periods in 'A.J.' -> 'aj'
     return "".join(c for c in n if c.isalnum())
 
 def normalize_position(pos):
@@ -58,17 +57,55 @@ def find_col(columns, keywords):
     return None
 
 def fetch_data_for_sport(sport):
-    """Fetches player data for a specific sport (defaults to today)."""
+    """
+    Fetches player data. 
+    SMART NFL LOGIC: Automatically searches the next 7 days for data if today returns nothing.
+    """
     letters = string.ascii_uppercase
-    current_date = str(datetime.date.today())
-    sport_data = []
     session = requests.Session()
+    sport_data = []
+
+    # 1. Determine Date Strategy
+    target_dates = [datetime.date.today()]
     
+    # If NFL, we probe the next 7 days because games aren't daily
+    if sport.lower() == 'nfl':
+        target_dates = [datetime.date.today() + datetime.timedelta(days=i) for i in range(7)]
+
+    # 2. Find the correct date (Probe)
+    active_date_str = str(datetime.date.today())
+    
+    if len(target_dates) > 1:
+        found_date = False
+        for d in target_dates:
+            d_str = str(d)
+            # Probe with a common letter to see if data exists
+            probe_url = (
+                f"https://api.real.vg/players/sport/{sport}/search"
+                f"?day={d_str}&includeNoOneOption=false"
+                f"&query=S&searchType=ratingLineup"
+            )
+            try:
+                r = session.get(probe_url, timeout=3)
+                if r.status_code == 200:
+                    data = r.json()
+                    if data.get("players"):
+                        active_date_str = d_str
+                        found_date = True
+                        break
+            except:
+                pass
+        
+        if not found_date:
+            # Fallback to today if probing failed, but usually means no games
+            active_date_str = str(datetime.date.today())
+
+    # 3. Fetch Full Alphabet for the active date
     for letter in letters:
         query = letter
         url = (
             f"https://api.real.vg/players/sport/{sport}/search"
-            f"?day={current_date}&includeNoOneOption=false"
+            f"?day={active_date_str}&includeNoOneOption=false"
             f"&query={query}&searchType=ratingLineup"
         )
         try:
@@ -96,20 +133,30 @@ def fetch_data_for_sport(sport):
                         "Sport": sport.upper(),
                         "Player Name": full_name,
                         "Position": position,
-                        "Boost": boost_value
+                        "Boost": boost_value,
+                        "Date": active_date_str 
                     })
         except requests.RequestException:
             continue
+            
     return sport_data
 
 def run_optimization(df, num_lineups=1):
     """Runs Assignment Problem solver."""
-    df = df.sort_values('Optimization Score', ascending=False)
-    df = df.drop_duplicates(subset=['Player Name'], keep='first').reset_index(drop=True)
-    
     SLOT_ADDERS = [2.0, 1.8, 1.6, 1.4, 1.2]
     NUM_SLOTS = len(SLOT_ADDERS)
     
+    # Safety Check: Do we have enough players?
+    if len(df) < NUM_SLOTS:
+        return None
+
+    df = df.sort_values('Optimization Score', ascending=False)
+    df = df.drop_duplicates(subset=['Player Name'], keep='first').reset_index(drop=True)
+    
+    # Double check after dedup
+    if len(df) < NUM_SLOTS:
+        return None
+
     prob = pulp.LpProblem("SlotOptimizer", pulp.LpMaximize)
     player_indices = list(df.index)
     slot_indices = list(range(NUM_SLOTS))
@@ -176,7 +223,6 @@ with st.sidebar:
 
     st.header("2. Projections Source")
     
-    # Logic: If ANY global URL exists, default to that, but allow override
     input_options = ["Upload CSV", "Paste Text"]
     if any(SPORT_PROJECTION_URLS.values()):
         input_options.insert(0, "Use Global/Public Projections")
@@ -193,7 +239,6 @@ with st.sidebar:
             url = SPORT_PROJECTION_URLS.get(sport_key)
             if url:
                 st.success(f"✅ Connected to {sport_key.upper()} Google Sheet")
-                st.caption("Data is pulled automatically from the configured URL.")
                 current_proj_url = url
             else:
                 st.warning(f"⚠️ No Google Sheet link configured for {sport_key.upper()}.")
@@ -238,28 +283,29 @@ if fetch_btn:
         
         if all_results:
             st.session_state.boost_data = pd.DataFrame(all_results)
-            st.success(f"Fetched {len(st.session_state.boost_data)} players.")
+            # Show the date we actually found data for (useful for NFL)
+            found_dates = sorted(list(set(r['Date'] for r in all_results if 'Date' in r)))
+            date_msg = f" (Date: {found_dates[0]})" if len(found_dates) == 1 else ""
+            st.success(f"Fetched {len(st.session_state.boost_data)} players{date_msg}.")
         else:
-            st.warning("No boosts found.")
+            st.warning("No boosts found. (Checked next 7 days for NFL).")
 
 if not st.session_state.boost_data.empty:
     df_boosts = st.session_state.boost_data
     df_proj = None
     error_msg = None
     
-    # 1. Load Data based on Method
+    # 1. Load Data
     if input_method == "Use Global/Public Projections" and current_proj_url:
         try:
             df_proj = pd.read_csv(current_proj_url)
         except Exception as e:
             error_msg = f"Error reading Global URL: {e}"
-            
-    elif uploaded_file is not None:
+    elif uploaded_file:
         try:
             df_proj = pd.read_csv(uploaded_file)
         except Exception as e:
             error_msg = f"Error reading file: {e}"
-            
     elif pasted_text:
         try:
             df_proj = pd.read_csv(io.StringIO(pasted_text), sep="\t")
@@ -284,7 +330,7 @@ if not st.session_state.boost_data.empty:
                 merged_df = pd.merge(df_boosts, df_proj, on='join_key', how='inner')
                 
                 if merged_df.empty:
-                    st.error("No players matched! Check spelling.")
+                    st.error("No players matched! This usually means names didn't match or the date is wrong.")
                 else:
                     merged_df = merged_df.rename(columns={points_col: 'Projection'})
                     if pos_col:
@@ -301,7 +347,6 @@ if not st.session_state.boost_data.empty:
                         merged_df['Est. Score'] = merged_df['Boost'] * merged_df['Projection']
                         cols = ['Sport', 'Position', 'Player Name', 'Boost', 'Projection', 'Est. Score']
                         st.dataframe(merged_df[cols].sort_values('Est. Score', ascending=False), use_container_width=True)
-                        
                         csv_data = merged_df[cols].to_csv(index=False)
                         st.download_button("Download Data CSV", csv_data, "player_pool.csv", "text/csv")
                     
@@ -347,12 +392,11 @@ if not st.session_state.boost_data.empty:
                                             hide_index=True
                                         )
                             else:
-                                st.error("Could not generate lineup.")
+                                st.error("Could not generate lineup. Not enough players matched (need at least 5).")
             else:
                 st.error(f"Could not find Name or Points columns. Found: {df_proj.columns.tolist()}")
         except Exception as e:
             st.error(f"Error processing data: {e}")
-    
     elif error_msg:
          st.error(error_msg)
     else:
