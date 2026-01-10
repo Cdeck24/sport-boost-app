@@ -40,10 +40,10 @@ def normalize_position(pos):
     if "TIGHT" in p or p == "TE": return "TE"
     return p
 
-def fetch_data_for_sport(sport, target_date):
-    """Fetches player data for a specific sport on a specific date."""
+def fetch_data_for_sport(sport):
+    """Fetches player data for a specific sport (defaults to today)."""
     letters = string.ascii_uppercase
-    current_date = str(target_date)
+    current_date = str(datetime.date.today())
     sport_data = []
     session = requests.Session()
     
@@ -192,7 +192,7 @@ def run_optimization(df, num_lineups=1):
 with st.sidebar:
     st.header("1. Fetch Boosts")
     selected_sports = st.multiselect("Select Leagues", ["ncaam", "nba", "nhl", "mlb", "nfl"], default=["nba"])
-    target_date = st.date_input("Select Date", datetime.date.today())
+    # Removed Date Picker
     fetch_btn = st.button("Fetch Live Boosts")
 
     st.header("2. Upload Projections")
@@ -211,7 +211,7 @@ if fetch_btn:
         progress_bar = st.progress(0)
         status_text = st.empty()
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(selected_sports)) as executor:
-            future_to_sport = {executor.submit(fetch_data_for_sport, sport, target_date): sport for sport in selected_sports}
+            future_to_sport = {executor.submit(fetch_data_for_sport, sport): sport for sport in selected_sports}
             completed_count = 0
             for future in concurrent.futures.as_completed(future_to_sport):
                 sport = future_to_sport[future]
@@ -228,9 +228,9 @@ if fetch_btn:
         
         if all_results:
             st.session_state.boost_data = pd.DataFrame(all_results)
-            st.success(f"Fetched {len(st.session_state.boost_data)} players for {target_date}.")
+            st.success(f"Fetched {len(st.session_state.boost_data)} players.")
         else:
-            st.warning(f"No boosts found for {target_date}.")
+            st.warning("No boosts found.")
 
 if not st.session_state.boost_data.empty:
     df_boosts = st.session_state.boost_data
