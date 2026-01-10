@@ -69,12 +69,15 @@ def fetch_data_for_sport(sport):
 
     return sport_data
 
-def run_optimization(df, roster_size):
+def run_optimization(df, roster_size, num_lineups=1):
     """
-    Runs a linear programming solver to find the optimal lineup.
+    Runs a linear programming solver to find the optimal lineup(s).
     df: DataFrame containing 'Player Name' and 'Total Score'
-    Ignores salary completely.
+    Returns a list of DataFrames (one for each lineup).
     """
+    # 1. Clean Data: Remove duplicates (keep highest score because df is sorted)
+    df = df.drop_duplicates(subset=['Player Name'], keep='first').reset_index(drop=True)
+    
     prob = pulp.LpProblem("FantasyOptimizer", pulp.LpMaximize)
     
     player_indices = list(df.index)
@@ -88,13 +91,27 @@ def run_optimization(df, roster_size):
     # Constraint: Roster Size
     prob += pulp.lpSum([player_vars[i] for i in player_indices]) == roster_size
 
-    prob.solve(pulp.PULP_CBC_CMD(msg=0))
-    
-    if pulp.LpStatus[prob.status] == "Optimal":
-        selected_indices = [i for i in player_indices if player_vars[i].varValue == 1.0]
-        return df.loc[selected_indices]
-    else:
-        return None
+    generated_lineups = []
+
+    # Loop to generate multiple lineups
+    for i in range(num_lineups):
+        prob.solve(pulp.PULP_CBC_CMD(msg=0))
+        
+        if pulp.LpStatus[prob.status] == "Optimal":
+            selected_indices = [idx for idx in player_indices if player_vars[idx].varValue == 1.0]
+            
+            # Store this lineup
+            lineup_df = df.loc[selected_indices].copy()
+            lineup_df["Lineup #"] = i + 1
+            generated_lineups.append(lineup_df)
+            
+            # Add constraint to prevent this specific combination from being picked again
+            # Constraint: Sum of variables for these specific players must be <= roster_size - 1
+            prob += pulp.lpSum([player_vars[idx] for idx in selected_indices]) <= roster_size - 1
+        else:
+            break # No more feasible solutions
+
+    return generated_lineups
 
 # --- Sidebar: Configuration ---
 with st.sidebar:
@@ -180,6 +197,8 @@ if not st.session_state.boost_data.empty:
                 
                 # Clean up columns for display
                 cols_to_show = ['Sport', 'Player Name', 'Boost', points_col, 'Total Score']
+                
+                # Sort by Total Score descending (Important for drop_duplicates later)
                 final_df = merged_df[cols_to_show].sort_values(by="Total Score", ascending=False)
                 
                 # --- TABS INTERFACE ---
@@ -190,19 +209,24 @@ if not st.session_state.boost_data.empty:
                 
                 with tab2:
                     st.subheader("Optimizer Settings")
+                    
+                    # Hardcoded Roster Size as requested
+                    ROSTER_SIZE = 5
+                    st.markdown(f"**Roster Size:** {ROSTER_SIZE} (Fixed)")
+                    st.caption("Duplicates are automatically removed.")
+
                     col1, col2 = st.columns(2)
                     with col1:
-                        roster_size = st.number_input("Roster Size", min_value=1, max_value=20, value=5)
-                    with col2:
-                        st.write("Top lineups generated based on Total Score (Boost * Projection).")
-                    
-                    if st.button("Generate Optimal Lineup"):
-                        optimal_lineup = run_optimization(final_df, roster_size)
+                        num_lineups = st.slider("Number of Lineups to Generate", 1, 10, 1)
+
+                    if st.button("Generate Optimal Lineups"):
+                        lineups = run_optimization(final_df, ROSTER_SIZE, num_lineups)
                         
-                        if optimal_lineup is not None:
-                            total_score = optimal_lineup['Total Score'].sum()
-                            st.success(f"Optimal Lineup Found! Total Score: {total_score:.2f}")
-                            st.dataframe(optimal_lineup, use_container_width=True)
+                        if lineups:
+                            for idx, lineup in enumerate(lineups):
+                                total_score = lineup['Total Score'].sum()
+                                with st.expander(f"Lineup #{idx+1} (Total Score: {total_score:.2f})", expanded=(idx==0)):
+                                    st.dataframe(lineup, use_container_width=True)
                         else:
                             st.error("Could not generate a lineup. Ensure you have enough players.")
 
