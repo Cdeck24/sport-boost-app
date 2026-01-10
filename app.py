@@ -12,7 +12,7 @@ st.set_page_config(page_title="Player Boost & Optimizer", layout="wide")
 st.title("🏀 🏒 Player Boost & Lineup Optimizer")
 st.markdown("""
 This tool fetches live **Boost Multipliers** from the API and allows you to merge them with 
-**Fantasy Projections** to find the highest-scoring lineups.
+**Fantasy Projections** to find the highest-scoring lineups using **Slot-Based Optimization**.
 """)
 
 # --- Helper Functions ---
@@ -69,47 +69,105 @@ def fetch_data_for_sport(sport):
 
     return sport_data
 
-def run_optimization(df, roster_size, num_lineups=1):
+def run_optimization(df, num_lineups=1):
     """
-    Runs a linear programming solver to find the optimal lineup(s).
-    df: DataFrame containing 'Player Name' and 'Total Score'
-    Returns a list of DataFrames (one for each lineup).
+    Runs an Assignment Problem solver.
+    Assigns 5 players to 5 specific slots to maximize total score.
+    Slot Multipliers: +2.0, +1.8, +1.6, +1.4, +1.2
     """
-    # 1. Clean Data: Remove duplicates (keep highest score because df is sorted)
+    # 1. Clean Data: Remove duplicates (keep highest Base Score)
+    # We need a temporary base score for sorting duplicates
+    df['Temp_Score'] = df['Boost'] * df['Projection']
+    df = df.sort_values('Temp_Score', ascending=False)
     df = df.drop_duplicates(subset=['Player Name'], keep='first').reset_index(drop=True)
     
-    prob = pulp.LpProblem("FantasyOptimizer", pulp.LpMaximize)
+    # Constants
+    SLOT_ADDERS = [2.0, 1.8, 1.6, 1.4, 1.2] # The fixed multipliers for Slot 1 to 5
+    NUM_SLOTS = len(SLOT_ADDERS)
     
+    prob = pulp.LpProblem("SlotOptimizer", pulp.LpMaximize)
+    
+    # Indices
     player_indices = list(df.index)
+    slot_indices = list(range(NUM_SLOTS))
     
-    # Decision variable: 1 if player is selected, 0 otherwise
-    player_vars = pulp.LpVariable.dicts("Player", player_indices, cat="Binary")
+    # --- Variables ---
+    # x[i][j] = 1 if player i is in slot j
+    x = pulp.LpVariable.dicts("x", (player_indices, slot_indices), cat="Binary")
     
-    # Objective: Maximize Total Score
-    prob += pulp.lpSum([df.loc[i, "Total Score"] * player_vars[i] for i in player_indices])
+    # y[i] = 1 if player i is selected (in ANY slot)
+    y = pulp.LpVariable.dicts("y", player_indices, cat="Binary")
     
-    # Constraint: Roster Size
-    prob += pulp.lpSum([player_vars[i] for i in player_indices]) == roster_size
+    # --- Objective ---
+    # Maximize sum of ( (Boost + Slot_Adder) * Projection )
+    obj_terms = []
+    for i in player_indices:
+        for j in slot_indices:
+            # Calculate points for this specific player in this specific slot
+            effective_boost = df.loc[i, 'Boost'] + SLOT_ADDERS[j]
+            points = effective_boost * df.loc[i, 'Projection']
+            obj_terms.append(points * x[i][j])
+            
+    prob += pulp.lpSum(obj_terms)
+    
+    # --- Constraints ---
+    
+    # 1. Each slot must have exactly 1 player
+    for j in slot_indices:
+        prob += pulp.lpSum([x[i][j] for i in player_indices]) == 1
+        
+    # 2. Link x and y: If player is in a slot, y must be 1. If not, y is 0.
+    # Also ensures a player can only be in ONE slot max.
+    for i in player_indices:
+        prob += pulp.lpSum([x[i][j] for j in slot_indices]) == y[i]
+        
+    # 3. Total players selected must equal Number of Slots (5)
+    prob += pulp.lpSum([y[i] for i in player_indices]) == NUM_SLOTS
 
     generated_lineups = []
 
-    # Loop to generate multiple lineups
-    for i in range(num_lineups):
+    # --- Solve Loop ---
+    for n in range(num_lineups):
         prob.solve(pulp.PULP_CBC_CMD(msg=0))
         
         if pulp.LpStatus[prob.status] == "Optimal":
-            selected_indices = [idx for idx in player_indices if player_vars[idx].varValue == 1.0]
+            lineup_data = []
+            selected_player_indices = []
             
-            # Store this lineup
-            lineup_df = df.loc[selected_indices].copy()
-            lineup_df["Lineup #"] = i + 1
+            # Extract result
+            for j in slot_indices:
+                for i in player_indices:
+                    if x[i][j].varValue == 1.0:
+                        selected_player_indices.append(i)
+                        
+                        p_name = df.loc[i, "Player Name"]
+                        p_proj = df.loc[i, "Projection"]
+                        p_boost = df.loc[i, "Boost"]
+                        slot_add = SLOT_ADDERS[j]
+                        eff_boost = p_boost + slot_add
+                        final_pts = eff_boost * p_proj
+                        
+                        lineup_data.append({
+                            "Slot": j + 1,
+                            "Slot Bonus": f"+{slot_add}x",
+                            "Player Name": p_name,
+                            "Projection": p_proj,
+                            "Base Boost": p_boost,
+                            "Eff. Boost": f"{eff_boost:.2f}x",
+                            "Points": final_pts
+                        })
+            
+            # Create DF and Sort by Slot
+            lineup_df = pd.DataFrame(lineup_data)
+            lineup_df = lineup_df.sort_values(by="Slot")
             generated_lineups.append(lineup_df)
             
-            # Add constraint to prevent this specific combination from being picked again
-            # Constraint: Sum of variables for these specific players must be <= roster_size - 1
-            prob += pulp.lpSum([player_vars[idx] for idx in selected_indices]) <= roster_size - 1
+            # Constraint: Exclude this specific SET of players from appearing again
+            # We enforce that the sum of y variables for these specific players must be <= 4
+            prob += pulp.lpSum([y[i] for i in selected_player_indices]) <= NUM_SLOTS - 1
+            
         else:
-            break # No more feasible solutions
+            break
 
     return generated_lineups
 
@@ -129,7 +187,7 @@ with st.sidebar:
 
 # --- Main Logic ---
 
-# Initialize session state to hold data across re-runs
+# Initialize session state
 if 'boost_data' not in st.session_state:
     st.session_state.boost_data = pd.DataFrame()
 
@@ -177,10 +235,10 @@ if not st.session_state.boost_data.empty:
         try:
             df_proj = pd.read_csv(uploaded_file)
             
-            # Normalize column names for easier matching
+            # Normalize column names
             df_proj.columns = [c.strip() for c in df_proj.columns]
             
-            # Identify critical columns (Case insensitive partial match)
+            # Identify critical columns
             name_col = next((c for c in df_proj.columns if "player" in c.lower()), None)
             points_col = next((c for c in df_proj.columns if "fantasy" in c.lower()), None)
 
@@ -192,54 +250,65 @@ if not st.session_state.boost_data.empty:
                 # Merge
                 merged_df = pd.merge(df_boosts, df_proj, on='join_key', how='inner')
                 
-                # Calculate Total Score
-                merged_df['Total Score'] = merged_df['Boost'] * merged_df[points_col]
+                # Standardize Projection Column Name for Optimizer
+                merged_df = merged_df.rename(columns={points_col: 'Projection'})
                 
-                # Clean up columns for display
-                cols_to_show = ['Sport', 'Player Name', 'Boost', points_col, 'Total Score']
+                # Calculate a "Base Score" just for sorting the Data Browser list
+                # (Note: Actual score depends on slot, this is just for reference)
+                merged_df['Base Score (No Slot)'] = merged_df['Boost'] * merged_df['Projection']
                 
-                # Sort by Total Score descending (Important for drop_duplicates later)
-                final_df = merged_df[cols_to_show].sort_values(by="Total Score", ascending=False)
+                final_df = merged_df.sort_values(by="Base Score (No Slot)", ascending=False)
                 
                 # --- TABS INTERFACE ---
                 tab1, tab2 = st.tabs(["📊 Data Browser", "🚀 Lineup Optimizer"])
                 
                 with tab1:
-                    st.dataframe(final_df, use_container_width=True)
+                    st.markdown("### Player Pool")
+                    cols_to_show = ['Sport', 'Player Name', 'Boost', 'Projection', 'Base Score (No Slot)']
+                    st.dataframe(final_df[cols_to_show], use_container_width=True)
                 
                 with tab2:
                     st.subheader("Optimizer Settings")
+                    st.markdown("""
+                    **Slot Rules:**
+                    - **Slot 1:** +2.0x
+                    - **Slot 2:** +1.8x
+                    - **Slot 3:** +1.6x
+                    - **Slot 4:** +1.4x
+                    - **Slot 5:** +1.2x
+                    """)
                     
-                    # Hardcoded Roster Size as requested
-                    ROSTER_SIZE = 5
-                    st.markdown(f"**Roster Size:** {ROSTER_SIZE} (Fixed)")
-                    st.caption("Duplicates are automatically removed.")
-
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        num_lineups = st.slider("Number of Lineups to Generate", 1, 10, 1)
+                    num_lineups = st.slider("Number of Lineups to Generate", 1, 10, 3)
 
                     if st.button("Generate Optimal Lineups"):
-                        lineups = run_optimization(final_df, ROSTER_SIZE, num_lineups)
+                        # Use the entire pool for optimization
+                        lineups = run_optimization(final_df, num_lineups)
                         
                         if lineups:
                             for idx, lineup in enumerate(lineups):
-                                total_score = lineup['Total Score'].sum()
-                                with st.expander(f"Lineup #{idx+1} (Total Score: {total_score:.2f})", expanded=(idx==0)):
-                                    st.dataframe(lineup, use_container_width=True)
+                                total_score = lineup['Points'].sum()
+                                with st.expander(f"Lineup #{idx+1} | Total Score: {total_score:.2f}", expanded=(idx==0)):
+                                    st.dataframe(
+                                        lineup, 
+                                        column_config={
+                                            "Points": st.column_config.NumberColumn(format="%.2f"),
+                                            "Projection": st.column_config.NumberColumn(format="%.2f"),
+                                        },
+                                        use_container_width=True,
+                                        hide_index=True
+                                    )
                         else:
                             st.error("Could not generate a lineup. Ensure you have enough players.")
 
             else:
-                st.error("Could not find 'Player' or 'Fantasy' columns in your CSV. Please check your headers.")
+                st.error("Could not find 'Player' or 'Fantasy' columns in your CSV.")
                 st.write("Columns found:", df_proj.columns.tolist())
                 
         except Exception as e:
             st.error(f"Error reading CSV: {e}")
             
     else:
-        # If no projections uploaded, just show the boosts
-        st.info("Upload a CSV to enable Projections & Optimization. Showing raw boosts for now:")
+        st.info("Upload a CSV to enable Projections & Optimization.")
         st.dataframe(df_boosts, use_container_width=True)
 
 else:
