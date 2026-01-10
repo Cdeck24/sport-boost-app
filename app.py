@@ -117,7 +117,7 @@ def fetch_data_for_sport(sport):
 
             for player in players:
                 full_name = f"{player['firstName']} {player['lastName']}"
-                boost_value = 1.0 # Default to 1.0x (Standard)
+                boost_value = 0.0
                 position = player.get('position', 'Unknown')
                 details = player.get("details")
                 
