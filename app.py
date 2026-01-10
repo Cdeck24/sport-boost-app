@@ -167,8 +167,8 @@ if not st.session_state.boost_data.empty:
             df_proj.columns = [c.strip() for c in df_proj.columns]
             
             # Identify critical columns
-            name_col = next((c for c in df_proj.columns if "name" in c.lower()), None)
-            points_col = next((c for c in df_proj.columns if any(x in c.lower() for x in ["proj", "pts", "fpts", "points"])), None)
+            name_col = next((c for c in df_proj.columns if "player" in c.lower()), None)
+            points_col = next((c for c in df_proj.columns if "fantasy" in c.lower()), None)
             salary_col = next((c for c in df_proj.columns if "salary" in c.lower()), None)
 
             if name_col and points_col:
