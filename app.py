@@ -326,8 +326,11 @@ if not st.session_state.boost_data.empty:
             points_col = find_col(df_proj.columns, ["ppg", "fantasy", "proj", "fpts", "pts", "avg", "fp"])
             pos_col = find_col(df_proj.columns, ["pos", "position"])
             
-            # GAME COLUMN DETECTION - Added "slate"
-            game_col = find_col(df_proj.columns, ["slate", "game", "matchup", "opp", "opponent"])
+            # --- SPLIT COLUMN DETECTION ---
+            # 1. Slate
+            slate_col = find_col(df_proj.columns, ["slate", "contest"])
+            # 2. Game
+            game_col = find_col(df_proj.columns, ["game", "matchup", "opp", "opponent"])
 
             if name_col and points_col:
                 df_boosts['join_key'] = df_boosts['Player Name'].apply(normalize_name)
@@ -343,7 +346,13 @@ if not st.session_state.boost_data.empty:
                         merged_df['Position'] = merged_df[pos_col].fillna(merged_df['Position'])
                     merged_df['Position'] = merged_df['Position'].apply(normalize_position)
                     
-                    # STANDARDIZE GAME COLUMN
+                    # --- STANDARDIZE SLATE ---
+                    if slate_col:
+                        merged_df['Slate'] = merged_df[slate_col].fillna("Unknown")
+                    else:
+                        merged_df['Slate'] = "ALL"
+                        
+                    # --- STANDARDIZE GAME ---
                     if game_col:
                         merged_df['Game'] = merged_df[game_col].fillna("Unknown")
                     else:
@@ -366,7 +375,7 @@ if not st.session_state.boost_data.empty:
                     
                     with tab1:
                         st.markdown("### Player Pool (Raw Data)")
-                        cols = ['Sport', 'Game', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Est. Score']
+                        cols = ['Sport', 'Slate', 'Game', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Est. Score']
                         cols = [c for c in cols if c in merged_df.columns]
                         st.dataframe(merged_df[cols].sort_values('Est. Score', ascending=False), use_container_width=True)
                         csv_data = merged_df[cols].to_csv(index=False)
@@ -384,23 +393,36 @@ if not st.session_state.boost_data.empty:
                     with tab3:
                         st.subheader("Generate Lineups")
                         
-                        # --- GAME FILTER SELECTOR ---
-                        # Only get games that are NOT "ALL" (unless "ALL" is the only option)
-                        unique_games = sorted(list(set(merged_df['Game'].astype(str).unique().tolist()) - {"ALL"}))
-                        options = ["ALL"] + unique_games
+                        col1, col2 = st.columns(2)
                         
-                        st.write("##### Filter by Game")
-                        selected_game_options = st.multiselect(
-                            "Select games to include:", 
-                            options, 
-                            default=["ALL"]
-                        )
+                        # --- FILTER: SLATE ---
+                        with col1:
+                            unique_slates = sorted(list(set(merged_df['Slate'].astype(str).unique().tolist()) - {"ALL"}))
+                            slate_options = ["ALL"] + unique_slates
+                            selected_slates = st.multiselect(
+                                "Filter by Slate:", 
+                                slate_options, 
+                                default=["ALL"]
+                            )
+
+                        # --- FILTER: GAME ---
+                        with col2:
+                            unique_games = sorted(list(set(merged_df['Game'].astype(str).unique().tolist()) - {"ALL"}))
+                            game_options = ["ALL"] + unique_games
+                            selected_games = st.multiselect(
+                                "Filter by Game:", 
+                                game_options, 
+                                default=["ALL"]
+                            )
                         
-                        # Filter Logic
-                        if "ALL" in selected_game_options:
-                            filtered_df = merged_df
-                        else:
-                            filtered_df = merged_df[merged_df['Game'].isin(selected_game_options)]
+                        # Apply Filters
+                        filtered_df = merged_df.copy()
+                        
+                        if "ALL" not in selected_slates:
+                            filtered_df = filtered_df[filtered_df['Slate'].isin(selected_slates)]
+                            
+                        if "ALL" not in selected_games:
+                            filtered_df = filtered_df[filtered_df['Game'].isin(selected_games)]
                             
                         st.caption(f"Pool Size: {len(filtered_df)} Players")
 
