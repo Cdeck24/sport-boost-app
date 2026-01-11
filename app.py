@@ -64,12 +64,11 @@ def fetch_data_for_sport(sport):
     letters = string.ascii_uppercase
     session = requests.Session()
     sport_data = []
-    seen_players = set() # Track seen players to avoid duplicates from overlapping letter searches
+    seen_players = set() # Track seen players to avoid duplicates
 
     # 1. Determine Date Strategy
     target_dates = [datetime.date.today()]
     
-    # If NFL, we probe the next 7 days because games aren't daily
     if sport.lower() == 'nfl':
         target_dates = [datetime.date.today() + datetime.timedelta(days=i) for i in range(7)]
 
@@ -80,7 +79,6 @@ def fetch_data_for_sport(sport):
         found_date = False
         for d in target_dates:
             d_str = str(d)
-            # Probe with a common letter to see if data exists
             probe_url = (
                 f"https://api.real.vg/players/sport/{sport}/search"
                 f"?day={d_str}&includeNoOneOption=false"
@@ -98,10 +96,9 @@ def fetch_data_for_sport(sport):
                 pass
         
         if not found_date:
-            # Fallback to today if probing failed, but usually means no games
             active_date_str = str(datetime.date.today())
 
-    # 3. Fetch Full Alphabet for the active date
+    # 3. Fetch Full Alphabet
     for letter in letters:
         query = letter
         url = (
@@ -117,30 +114,23 @@ def fetch_data_for_sport(sport):
             if not players: continue
 
             for player in players:
-                # -- INJURY CHECK --
                 injury_status = player.get('injuryStatus', '')
                 if injury_status == 'O':
-                    continue # Skip OUT players entirely
+                    continue
 
                 position = player.get('position', 'Unknown')
-
-                # -- NHL GOALIE FILTER --
                 if sport.lower() == 'nhl' and position == 'G':
                     continue
 
                 full_name = f"{player['firstName']} {player['lastName']}"
                 
-                # -- DEDUP CHECK --
-                # If we've already seen this name in a previous letter query, skip it
                 if full_name in seen_players:
                     continue
                 seen_players.add(full_name)
 
-                boost_value = 0.0 # Default to 0.0 (No Boost)
-                
+                boost_value = 0.0 
                 details = player.get("details")
                 
-                # Check for explicit boost
                 if details and isinstance(details, list) and len(details) > 0 and "text" in details[0]:
                     text = details[0]["text"]
                     boost_str = text.replace("x", "").replace("+", "").strip()
@@ -149,14 +139,13 @@ def fetch_data_for_sport(sport):
                     except ValueError:
                         pass 
                 
-                # Always add the player, even if boost is just 0.0
                 sport_data.append({
                     "Sport": sport.upper(),
                     "Player Name": full_name,
                     "Position": position,
                     "Boost": boost_value,
                     "Date": active_date_str,
-                    "Injury": injury_status # Store status for display/warning later
+                    "Injury": injury_status
                 })
         except requests.RequestException:
             continue
@@ -168,14 +157,12 @@ def run_optimization(df, num_lineups=1):
     SLOT_ADDERS = [2.0, 1.8, 1.6, 1.4, 1.2]
     NUM_SLOTS = len(SLOT_ADDERS)
     
-    # Safety Check: Do we have enough players?
     if len(df) < NUM_SLOTS:
         return None
 
     df = df.sort_values('Optimization Score', ascending=False)
     df = df.drop_duplicates(subset=['Player Name'], keep='first').reset_index(drop=True)
     
-    # Double check after dedup
     if len(df) < NUM_SLOTS:
         return None
 
@@ -226,7 +213,7 @@ def run_optimization(df, num_lineups=1):
                             "Slot Bonus": f"+{slot_add}x",
                             "Position": p_pos,
                             "Player Name": p_name,
-                            "Injury": p_injury, # Include in output
+                            "Injury": p_injury,
                             "Projection": p_proj_orig,
                             "Base Boost": p_boost,
                             "Eff. Boost": f"{eff_boost:.2f}x",
@@ -242,18 +229,10 @@ def run_optimization(df, num_lineups=1):
 # --- Sidebar: Configuration ---
 with st.sidebar:
     st.header("1. Fetch Boosts")
-    
-    # Updated: Single Select Dropdown
-    selected_sport = st.selectbox(
-        "Select League", 
-        ["ncaam", "nba", "nhl", "mlb", "nfl"], 
-        index=1
-    )
-    
+    selected_sport = st.selectbox("Select League", ["ncaam", "nba", "nhl", "mlb", "nfl"], index=1)
     fetch_btn = st.button("Fetch Live Boosts")
 
     st.header("2. Projections Source")
-    
     input_options = ["Upload CSV", "Paste Text"]
     if any(SPORT_PROJECTION_URLS.values()):
         input_options.insert(0, "Use Global/Public Projections")
@@ -265,16 +244,13 @@ with st.sidebar:
     current_proj_url = None
     
     if input_method == "Use Global/Public Projections":
-        # Simply get the URL for the selected sport
         sport_key = selected_sport.lower()
         url = SPORT_PROJECTION_URLS.get(sport_key)
-        
         if url:
             st.success(f"✅ Connected to {sport_key.upper()} Google Sheet")
             current_proj_url = url
         else:
             st.warning(f"⚠️ No Google Sheet link configured for {sport_key.upper()}.")
-            
     elif input_method == "Upload CSV":
         st.info("Upload CSV with Name, Points (e.g. 'FPTS', 'Proj'), and Position.")
         uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
@@ -282,13 +258,9 @@ with st.sidebar:
         st.info("Copy table from website and paste here.")
         pasted_text = st.text_area("Paste Data Here", height=150, placeholder="Player Name   FPTS   Position...")
 
-    # --- 3. Optimizer Settings (Sidebar Global) ---
     st.header("3. Optimization Settings")
-    
-    # Bias defaults set to Neutral (1.0) for all sports
     wr_rb_bonus = 1.0
     qb_penalty = 1.0
-        
     num_lineups = st.slider("Number of Lineups", 1, 10, 3)
 
 # --- Main Logic ---
@@ -299,22 +271,18 @@ if fetch_btn:
     all_results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
-    
-    # Simplified: No thread pool needed for single sport
     try:
         status_text.text(f"Fetching {selected_sport.upper()}...")
         data = fetch_data_for_sport(selected_sport)
         all_results.extend(data)
     except Exception as e:
         st.error(f"Error fetching data: {e}")
-        
     progress_bar.progress(100)
     status_text.empty()
     progress_bar.empty()
     
     if all_results:
         st.session_state.boost_data = pd.DataFrame(all_results)
-        # Show the date we actually found data for (useful for NFL)
         found_dates = sorted(list(set(r['Date'] for r in all_results if 'Date' in r)))
         date_msg = f" (Date: {found_dates[0]})" if len(found_dates) == 1 else ""
         st.success(f"Fetched {len(st.session_state.boost_data)} players{date_msg}.")
@@ -326,31 +294,22 @@ if not st.session_state.boost_data.empty:
     df_proj = None
     error_msg = None
     
-    # 1. Load Data
     if input_method == "Use Global/Public Projections" and current_proj_url:
-        try:
-            df_proj = pd.read_csv(current_proj_url)
-        except Exception as e:
-            error_msg = f"Error reading Global URL: {e}"
+        try: df_proj = pd.read_csv(current_proj_url)
+        except Exception as e: error_msg = f"Error reading Global URL: {e}"
     elif uploaded_file:
-        try:
-            df_proj = pd.read_csv(uploaded_file)
-        except Exception as e:
-            error_msg = f"Error reading file: {e}"
+        try: df_proj = pd.read_csv(uploaded_file)
+        except Exception as e: error_msg = f"Error reading file: {e}"
     elif pasted_text:
         try:
             df_proj = pd.read_csv(io.StringIO(pasted_text), sep="\t")
-            if len(df_proj.columns) < 2:
-                df_proj = pd.read_csv(io.StringIO(pasted_text), sep=",")
-        except Exception as e:
-            error_msg = f"Error reading text: {e}"
+            if len(df_proj.columns) < 2: df_proj = pd.read_csv(io.StringIO(pasted_text), sep=",")
+        except Exception as e: error_msg = f"Error reading text: {e}"
 
-    # 2. Process Data
     if df_proj is not None:
         try:
             df_proj.columns = [c.strip() for c in df_proj.columns]
             
-            # --- Special Logic for Split Names (NFL) ---
             first_name_col = find_col(df_proj.columns, ["first name", "firstname", "first"])
             last_name_col = find_col(df_proj.columns, ["last name", "lastname", "last"])
             
@@ -361,9 +320,11 @@ if not st.session_state.boost_data.empty:
             else:
                 name_col = find_col(df_proj.columns, ["player", "name", "who"])
 
-            # Updated Points Search
             points_col = find_col(df_proj.columns, ["ppg", "fantasy", "proj", "fpts", "pts", "avg", "fp"])
             pos_col = find_col(df_proj.columns, ["pos", "position"])
+            
+            # GAME COLUMN DETECTION
+            game_col = find_col(df_proj.columns, ["game", "matchup", "opp", "opponent"])
 
             if name_col and points_col:
                 df_boosts['join_key'] = df_boosts['Player Name'].apply(normalize_name)
@@ -373,24 +334,21 @@ if not st.session_state.boost_data.empty:
                 
                 if merged_df.empty:
                     st.error("No players matched! This usually means names didn't match or the date is wrong.")
-                    # Debug Info
-                    with st.expander("Debug: Show unmatched data"):
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.write("First 5 Boost Names:", df_boosts['Player Name'].head().tolist())
-                        with col2:
-                            st.write("First 5 Projection Names:", df_proj[name_col].head().tolist())
                 else:
                     merged_df = merged_df.rename(columns={points_col: 'Projection'})
                     if pos_col:
                         merged_df['Position'] = merged_df[pos_col].fillna(merged_df['Position'])
                     merged_df['Position'] = merged_df['Position'].apply(normalize_position)
                     
+                    # STANDARDIZE GAME COLUMN
+                    if game_col:
+                        merged_df['Game'] = merged_df[game_col].fillna("Unknown")
+                    else:
+                        merged_df['Game'] = "All Games"
+
                     merged_df['Projection'] = pd.to_numeric(merged_df['Projection'], errors='coerce').fillna(0)
                     merged_df = merged_df[merged_df['Projection'] > 0]
 
-                    # --- PRE-CALCULATE OPTIMIZATION SCORES (GLOBAL) ---
-                    # We do this here so the "Best Value" tab can see the unbiased/biased scores immediately
                     def get_bias_multiplier(row):
                         if row['Position'] in ['WR', 'RB']: return wr_rb_bonus
                         if row['Position'] == 'QB': return qb_penalty
@@ -398,50 +356,57 @@ if not st.session_state.boost_data.empty:
 
                     merged_df['Bias'] = merged_df.apply(get_bias_multiplier, axis=1)
                     merged_df['Adjusted Projection'] = merged_df['Projection'] * merged_df['Bias']
-                    # Optimization Score includes Boost * Adjusted Projection
                     merged_df['Optimization Score'] = merged_df['Boost'] * merged_df['Adjusted Projection']
-                    # Est. Score is the raw "Boost * Projection" (No position bias)
                     merged_df['Est. Score'] = merged_df['Boost'] * merged_df['Projection']
 
-                    # --- TABS INTERFACE ---
                     tab1, tab2, tab3 = st.tabs(["📊 Data Browser", "💎 Best Value", "🚀 Lineup Optimizer"])
                     
-                    # Tab 1: Raw Data
                     with tab1:
                         st.markdown("### Player Pool (Raw Data)")
-                        cols = ['Sport', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Est. Score']
+                        cols = ['Sport', 'Game', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Est. Score']
+                        # Ensure columns exist before display
+                        cols = [c for c in cols if c in merged_df.columns]
                         st.dataframe(merged_df[cols].sort_values('Est. Score', ascending=False), use_container_width=True)
                         csv_data = merged_df[cols].to_csv(index=False)
                         st.download_button("Download Data CSV", csv_data, "player_pool.csv", "text/csv")
 
-                    # Tab 2: Best Value (Optimized View)
                     with tab2:
                         st.markdown("### Top Value Plays")
-                        st.markdown("""
-                        This list ranks players by their **Optimization Score**. 
-                        It accounts for your League Settings (e.g., WR/RB Bonus in NFL) and the Boost Multiplier.
-                        """)
-                        
-                        value_cols = ['Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Adjusted Projection', 'Optimization Score']
+                        value_cols = ['Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Optimization Score']
                         st.dataframe(
                             merged_df[value_cols].sort_values('Optimization Score', ascending=False).head(50), 
                             use_container_width=True,
-                            column_config={
-                                "Optimization Score": st.column_config.NumberColumn(format="%.2f"),
-                                "Adjusted Projection": st.column_config.NumberColumn(format="%.2f")
-                            }
+                            column_config={"Optimization Score": st.column_config.NumberColumn(format="%.2f")}
                         )
 
-                    # Tab 3: Optimizer
                     with tab3:
                         st.subheader("Generate Lineups")
+                        
+                        # --- GAME FILTER SELECTOR ---
+                        unique_games = sorted(merged_df['Game'].astype(str).unique().tolist())
+                        # Add ALL option
+                        options = ["ALL"] + unique_games
+                        
+                        st.write("##### Filter by Game")
+                        selected_game_options = st.multiselect(
+                            "Select games to include:", 
+                            options, 
+                            default=["ALL"]
+                        )
+                        
+                        # Filter Logic
+                        if "ALL" in selected_game_options:
+                            filtered_df = merged_df
+                        else:
+                            filtered_df = merged_df[merged_df['Game'].isin(selected_game_options)]
+                            
+                        st.caption(f"Pool Size: {len(filtered_df)} Players")
+
                         if st.button("Generate Optimal Lineups"):
-                            lineups = run_optimization(merged_df, num_lineups)
+                            lineups = run_optimization(filtered_df, num_lineups)
                             if lineups:
                                 for idx, lineup in enumerate(lineups):
                                     total_score = lineup['Points'].sum()
-                                    
-                                    # Check for Questionable players
                                     q_players = lineup[lineup['Injury'] == 'Q']['Player Name'].tolist()
                                     warn_icon = "⚠️ " if q_players else ""
                                     
