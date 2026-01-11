@@ -356,8 +356,11 @@ if not st.session_state.boost_data.empty:
                     merged_df['Position'] = merged_df['Position'].apply(normalize_position)
                     
                     # --- STANDARDIZE SLATE ---
+                    # Changed: fillna("Unknown") -> fillna("ALL")
+                    # This prevents "Unknown" from appearing as a dropdown option. 
+                    # Players with no slate are just part of the default "ALL" pool.
                     if slate_col:
-                        merged_df['Slate'] = merged_df[slate_col].fillna("Unknown")
+                        merged_df['Slate'] = merged_df[slate_col].fillna("ALL")
                     else:
                         merged_df['Slate'] = "ALL"
                         
