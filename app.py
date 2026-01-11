@@ -11,9 +11,7 @@ import io
 SPORT_PROJECTION_URLS = {
     "nba": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=0&single=true&output=csv", 
     "nfl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1180552482&single=true&output=csv",
-    "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv",
-    "mlb": "",
-    "ncaam": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1476893875&single=true&output=csv"
+    "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv"
 }
 # ---------------------------------------------------
 
@@ -232,7 +230,7 @@ def run_optimization(df, num_lineups=1):
 # --- Sidebar: Configuration ---
 with st.sidebar:
     st.header("1. Fetch Boosts")
-    selected_sport = st.selectbox("Select League", ["ncaam", "nba", "nhl", "mlb", "nfl"], index=1)
+    selected_sport = st.selectbox("Select League", ["nba", "nhl", "nfl"], index=0)
     fetch_btn = st.button("Fetch Live Boosts")
 
     st.header("2. Projections Source")
