@@ -69,6 +69,7 @@ def fetch_data_for_sport(sport):
     # 1. Determine Date Strategy
     target_dates = [datetime.date.today()]
     
+    # If NFL, we probe the next 7 days because games aren't daily
     if sport.lower() == 'nfl':
         target_dates = [datetime.date.today() + datetime.timedelta(days=i) for i in range(7)]
 
@@ -79,6 +80,7 @@ def fetch_data_for_sport(sport):
         found_date = False
         for d in target_dates:
             d_str = str(d)
+            # Probe with a common letter to see if data exists
             probe_url = (
                 f"https://api.real.vg/players/sport/{sport}/search"
                 f"?day={d_str}&includeNoOneOption=false"
@@ -96,6 +98,7 @@ def fetch_data_for_sport(sport):
                 pass
         
         if not found_date:
+            # Fallback to today if probing failed, but usually means no games
             active_date_str = str(datetime.date.today())
 
     # 3. Fetch Full Alphabet
@@ -323,8 +326,8 @@ if not st.session_state.boost_data.empty:
             points_col = find_col(df_proj.columns, ["ppg", "fantasy", "proj", "fpts", "pts", "avg", "fp"])
             pos_col = find_col(df_proj.columns, ["pos", "position"])
             
-            # GAME COLUMN DETECTION
-            game_col = find_col(df_proj.columns, ["game", "matchup", "opp", "opponent"])
+            # GAME COLUMN DETECTION - Added "slate"
+            game_col = find_col(df_proj.columns, ["slate", "game", "matchup", "opp", "opponent"])
 
             if name_col and points_col:
                 df_boosts['join_key'] = df_boosts['Player Name'].apply(normalize_name)
@@ -344,7 +347,7 @@ if not st.session_state.boost_data.empty:
                     if game_col:
                         merged_df['Game'] = merged_df[game_col].fillna("Unknown")
                     else:
-                        merged_df['Game'] = "All Games"
+                        merged_df['Game'] = "ALL"
 
                     merged_df['Projection'] = pd.to_numeric(merged_df['Projection'], errors='coerce').fillna(0)
                     merged_df = merged_df[merged_df['Projection'] > 0]
@@ -364,7 +367,6 @@ if not st.session_state.boost_data.empty:
                     with tab1:
                         st.markdown("### Player Pool (Raw Data)")
                         cols = ['Sport', 'Game', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Est. Score']
-                        # Ensure columns exist before display
                         cols = [c for c in cols if c in merged_df.columns]
                         st.dataframe(merged_df[cols].sort_values('Est. Score', ascending=False), use_container_width=True)
                         csv_data = merged_df[cols].to_csv(index=False)
@@ -383,8 +385,8 @@ if not st.session_state.boost_data.empty:
                         st.subheader("Generate Lineups")
                         
                         # --- GAME FILTER SELECTOR ---
-                        unique_games = sorted(merged_df['Game'].astype(str).unique().tolist())
-                        # Add ALL option
+                        # Only get games that are NOT "ALL" (unless "ALL" is the only option)
+                        unique_games = sorted(list(set(merged_df['Game'].astype(str).unique().tolist()) - {"ALL"}))
                         options = ["ALL"] + unique_games
                         
                         st.write("##### Filter by Game")
