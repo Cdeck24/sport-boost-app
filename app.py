@@ -11,9 +11,9 @@ import io
 # You can now paste direct website URLs (e.g. Rotowire, FantasyPros) 
 # The app will try to scrape the table directly.
 SPORT_PROJECTION_URLS = {
-    "nba": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=0&single=true&output=csv", 
-    "nfl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1180552482&single=true&output=csv",
-    "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv"
+    "nba": "https://www.dailyfantasyfuel.com/nba/projections/", 
+    "nfl": "https://www.dailyfantasyfuel.com/nfl/projections/",
+    "nhl": "https://www.dailyfantasyfuel.com/nhl/projections/"
 }
 # ---------------------------------------------------
 
