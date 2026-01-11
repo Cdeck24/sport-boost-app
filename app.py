@@ -262,6 +262,7 @@ with st.sidebar:
         pasted_text = st.text_area("Paste Data Here", height=150, placeholder="Player Name   FPTS   Position...")
 
     st.header("3. Optimization Settings")
+    # Biases removed (default 1.0)
     wr_rb_bonus = 1.0
     qb_penalty = 1.0
     num_lineups = st.slider("Number of Lineups", 1, 10, 3)
@@ -327,19 +328,14 @@ if not st.session_state.boost_data.empty:
             pos_col = find_col(df_proj.columns, ["pos", "position"])
             
             # --- SPLIT COLUMN DETECTION ---
-            # 1. Slate
             slate_col = find_col(df_proj.columns, ["slate", "contest", "label"])
-            # 2. Game - Look for a single "Game" column
             game_col = find_col(df_proj.columns, ["game", "matchup", "match"])
-            # 3. Team/Opp Split
             team_col = find_col(df_proj.columns, ["team", "tm", "squad"])
             opp_col = find_col(df_proj.columns, ["opp", "opponent", "vs"])
 
-            # --- HEURISTIC FALLBACK FOR GAME ---
-            # If no explicit columns found, scan data for " v " or "@" patterns
+            # Heuristic for hidden Game columns (e.g. "@" or "vs")
             if not game_col and not (team_col and opp_col):
                 for col in df_proj.columns:
-                    # Check first few non-null values
                     sample = df_proj[col].dropna().astype(str).head(5)
                     if any(" v " in x.lower() or " vs " in x.lower() or "@" in x for x in sample):
                         game_col = col
@@ -368,7 +364,10 @@ if not st.session_state.boost_data.empty:
                     # --- STANDARDIZE GAME ---
                     # Priority: Construct from Team + Opp if available
                     if team_col and opp_col:
-                        merged_df['Game'] = merged_df[team_col].astype(str) + " vs " + merged_df[opp_col].astype(str)
+                        # Alphabetize teams to ensure uniqueness (e.g. "ATL vs PHI" matches "PHI vs ATL")
+                        merged_df['Game'] = merged_df.apply(
+                            lambda x: " vs ".join(sorted([str(x[team_col]), str(x[opp_col])])), axis=1
+                        )
                     elif game_col:
                         merged_df['Game'] = merged_df[game_col].fillna("Unknown")
                     else:
@@ -465,6 +464,13 @@ if not st.session_state.boost_data.empty:
                                         )
                             else:
                                 st.error("Could not generate lineup. Not enough players matched (need at least 5).")
+                        
+                        with st.expander("Debug: Column Detection"):
+                            st.write(f"**Game Col:** {game_col}")
+                            st.write(f"**Team Col:** {team_col}")
+                            st.write(f"**Opp Col:** {opp_col}")
+                            st.write(f"**Slate Col:** {slate_col}")
+                            st.dataframe(df_proj.head(3))
             else:
                 st.error(f"Could not find Name or Points columns. Found: {df_proj.columns.tolist()}")
         except Exception as e:
