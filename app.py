@@ -329,8 +329,10 @@ if not st.session_state.boost_data.empty:
             # --- SPLIT COLUMN DETECTION ---
             # 1. Slate
             slate_col = find_col(df_proj.columns, ["slate", "contest"])
-            # 2. Game
-            game_col = find_col(df_proj.columns, ["game", "matchup", "opp", "opponent"])
+            # 2. Game - Look for a single "Game" column OR split Team/Opponent
+            game_col = find_col(df_proj.columns, ["game", "matchup"])
+            team_col = find_col(df_proj.columns, ["team"])
+            opp_col = find_col(df_proj.columns, ["opp", "opponent"])
 
             if name_col and points_col:
                 df_boosts['join_key'] = df_boosts['Player Name'].apply(normalize_name)
@@ -355,6 +357,9 @@ if not st.session_state.boost_data.empty:
                     # --- STANDARDIZE GAME ---
                     if game_col:
                         merged_df['Game'] = merged_df[game_col].fillna("Unknown")
+                    elif team_col and opp_col:
+                        # Construct Game from Team + Opp
+                        merged_df['Game'] = merged_df[team_col].astype(str) + " vs " + merged_df[opp_col].astype(str)
                     else:
                         merged_df['Game'] = "ALL"
 
