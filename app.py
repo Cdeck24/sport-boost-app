@@ -405,26 +405,24 @@ if not st.session_state.boost_data.empty:
                 # --- SPECIAL NBA RATING LOGIC ---
                 custom_rating_applied = False
                 if selected_sport == "nba":
-                    # Map required keys to potential column names
+                    # Update column mapping to match Daily Fantasy Fuel's specific headers
                     nba_cols_map = {
-                        "fgm": find_col(df_proj.columns, ["fgm", "fg made"]),
-                        "fga": find_col(df_proj.columns, ["fga", "fg attempt"]),
-                        "3pm": find_col(df_proj.columns, ["3pm", "3pt made", "3p"]),
-                        "ftm": find_col(df_proj.columns, ["ftm", "ft made"]),
-                        "fta": find_col(df_proj.columns, ["fta", "ft attempt"]),
-                        "reb": find_col(df_proj.columns, ["reb", "tot reb"]),
-                        "ast": find_col(df_proj.columns, ["ast", "assist"]),
-                        "stl": find_col(df_proj.columns, ["stl", "steal"]),
-                        "blk": find_col(df_proj.columns, ["blk", "block"]),
-                        "to":  find_col(df_proj.columns, ["to", "tov", "turnover"])
+                        "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
+                        "fga": find_col(df_proj.columns, ["fieldGoalsAttempted", "fga"]),
+                        "3pm": find_col(df_proj.columns, ["threePointsMade", "3pm"]),
+                        "ftm": find_col(df_proj.columns, ["freeThrowsMade", "ftm"]),
+                        "fta": find_col(df_proj.columns, ["freeThrowsAttempted", "fta"]),
+                        "reb": find_col(df_proj.columns, ["rebounds", "reb", "tot reb"]),
+                        "ast": find_col(df_proj.columns, ["assists", "ast"]),
+                        "stl": find_col(df_proj.columns, ["steals", "stl"]),
+                        "blk": find_col(df_proj.columns, ["blocks", "blk"]),
+                        "to":  find_col(df_proj.columns, ["turnovers", "to", "tov"])
                     }
                     
-                    # Check if ALL required columns exist
                     if all(v is not None for v in nba_cols_map.values()):
                         df_proj['Calculated_Rating'] = df_proj.apply(
                             lambda row: calculate_nba_custom_rating(row, nba_cols_map), axis=1
                         )
-                        # Override the default points column key to use our new calculation
                         points_col = 'Calculated_Rating'
                         custom_rating_applied = True
                         st.success("✅ Applied Custom NBA Efficiency Formula using raw stats found in data.")
