@@ -47,9 +47,10 @@ def normalize_position(pos):
     return p
 
 def find_col(columns, keywords):
-    """Finds the first column that matches any keyword in the list."""
+    """Finds the first column that matches any keyword in the list (Case Insensitive)."""
     for col in columns:
-        if any(k in col.lower() for k in keywords):
+        col_lower = str(col).lower()
+        if any(str(k).lower() in col_lower for k in keywords):
             return col
     return None
 
@@ -376,6 +377,7 @@ if not st.session_state.boost_data.empty:
             
             df_proj.columns = [str(c).strip() for c in df_proj.columns]
             
+            # --- Column Detection ---
             first_name_col = find_col(df_proj.columns, ["first name", "firstname", "first"])
             last_name_col = find_col(df_proj.columns, ["last name", "lastname", "last"])
             
@@ -386,9 +388,41 @@ if not st.session_state.boost_data.empty:
             else:
                 name_col = find_col(df_proj.columns, ["player", "name", "who"])
 
-            points_col = find_col(df_proj.columns, ["ppg", "fantasy", "proj", "fpts", "pts", "avg", "fp"])
-            pos_col = find_col(df_proj.columns, ["pos", "position"])
+            points_col = None # Initialize to None
             
+            # --- SPECIAL NBA RATING LOGIC (Priority) ---
+            if selected_sport == "nba":
+                # Explicit Mapping based on user provided columns
+                nba_cols_map = {
+                    "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
+                    "fga": find_col(df_proj.columns, ["fieldGoalsAttempted", "fga"]),
+                    "3pm": find_col(df_proj.columns, ["threePointsMade", "3pm"]),
+                    "ftm": find_col(df_proj.columns, ["freeThrowsMade", "ftm"]),
+                    "fta": find_col(df_proj.columns, ["freeThrowsAttempted", "fta"]),
+                    "reb": find_col(df_proj.columns, ["rebounds", "reb", "tot reb"]),
+                    "ast": find_col(df_proj.columns, ["assists", "ast"]),
+                    "stl": find_col(df_proj.columns, ["steals", "stl"]),
+                    "blk": find_col(df_proj.columns, ["blocks", "blk"]),
+                    "to":  find_col(df_proj.columns, ["turnovers", "to", "tov"])
+                }
+                
+                # Check for missing keys
+                missing_keys = [k for k, v in nba_cols_map.items() if v is None]
+                
+                if not missing_keys:
+                    df_proj['Calculated_Rating'] = df_proj.apply(
+                        lambda row: calculate_nba_custom_rating(row, nba_cols_map), axis=1
+                    )
+                    points_col = 'Calculated_Rating'
+                    st.success("✅ Applied Custom NBA Efficiency Formula using raw stats.")
+                else:
+                    st.error(f"❌ NBA Custom Rating Failed. Missing stats for: {', '.join(missing_keys)}")
+            
+            # Fallback: Look for standard fantasy score if no custom rating (or not NBA)
+            if not points_col:
+                points_col = find_col(df_proj.columns, ["ppg", "fantasy", "proj", "fpts", "pts", "avg", "fp"])
+
+            pos_col = find_col(df_proj.columns, ["pos", "position"])
             slate_col = find_col(df_proj.columns, ["slate", "contest", "label"])
             game_col = find_col(df_proj.columns, ["game", "matchup", "match"])
             team_col = find_col(df_proj.columns, ["team", "tm", "squad"])
@@ -402,31 +436,6 @@ if not st.session_state.boost_data.empty:
                         break
 
             if name_col and points_col:
-                # --- SPECIAL NBA RATING LOGIC ---
-                custom_rating_applied = False
-                if selected_sport == "nba":
-                    # Update column mapping to match Daily Fantasy Fuel's specific headers
-                    nba_cols_map = {
-                        "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
-                        "fga": find_col(df_proj.columns, ["fieldGoalsAttempted", "fga"]),
-                        "3pm": find_col(df_proj.columns, ["threePointsMade", "3pm"]),
-                        "ftm": find_col(df_proj.columns, ["freeThrowsMade", "ftm"]),
-                        "fta": find_col(df_proj.columns, ["freeThrowsAttempted", "fta"]),
-                        "reb": find_col(df_proj.columns, ["rebounds", "reb", "tot reb"]),
-                        "ast": find_col(df_proj.columns, ["assists", "ast"]),
-                        "stl": find_col(df_proj.columns, ["steals", "stl"]),
-                        "blk": find_col(df_proj.columns, ["blocks", "blk"]),
-                        "to":  find_col(df_proj.columns, ["turnovers", "to", "tov"])
-                    }
-                    
-                    if all(v is not None for v in nba_cols_map.values()):
-                        df_proj['Calculated_Rating'] = df_proj.apply(
-                            lambda row: calculate_nba_custom_rating(row, nba_cols_map), axis=1
-                        )
-                        points_col = 'Calculated_Rating'
-                        custom_rating_applied = True
-                        st.success("✅ Applied Custom NBA Efficiency Formula based on stats. Ignoring default fantasy score.")
-
                 # --- NHL LINE FILTERING ---
                 if selected_sport == 'nhl':
                     rl_col = find_col(df_proj.columns, ["reg_line"])
