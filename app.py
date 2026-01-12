@@ -7,11 +7,13 @@ import concurrent.futures
 import pulp
 import io
 
-# --- ⬇️ PASTE YOUR GOOGLE SHEET CSV LINKS HERE ⬇️ ---
+# --- ⬇️ PASTE YOUR LINKS HERE (CSV or Webpages) ⬇️ ---
+# You can now paste direct website URLs (e.g. Rotowire, FantasyPros) 
+# The app will try to scrape the table directly.
 SPORT_PROJECTION_URLS = {
-    "nba": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=0&single=true&output=csv", 
-    "nfl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1180552482&single=true&output=csv",
-    "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv"
+    "nba": "https://www.dailyfantasyfuel.com/nba/projections/", 
+    "nfl": "https://www.dailyfantasyfuel.com/nfl/projections/",
+    "nhl": "https://www.dailyfantasyfuel.com/nhl/projections/"
 }
 # ---------------------------------------------------
 
@@ -33,7 +35,6 @@ def normalize_name(name):
         if n.endswith(suffix):
             n = n[:-len(suffix)]
             break
-    # Remove punctuation like periods in 'A.J.' -> 'aj'
     return "".join(c for c in n if c.isalnum())
 
 def normalize_position(pos):
@@ -54,31 +55,61 @@ def find_col(columns, keywords):
             return col
     return None
 
+def load_projections_from_url(url):
+    """
+    Smart Fetcher: Tries to read URL as CSV first, then as HTML tables.
+    Includes User-Agent headers to avoid 403 Forbidden errors from some sites.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        content = response.content
+        
+        # 1. Try Parsing as CSV
+        try:
+            return pd.read_csv(io.BytesIO(content)), "CSV"
+        except:
+            pass
+            
+        # 2. Try Parsing as HTML (Web Scraper)
+        try:
+            tables = pd.read_html(io.BytesIO(content))
+            if tables:
+                # Heuristic: Return the table with the most rows
+                largest_table = max(tables, key=len)
+                if len(largest_table) > 5: # Basic sanity check
+                    return largest_table, "HTML"
+        except:
+            pass
+            
+        return None, "Could not identify CSV or HTML Table data."
+        
+    except Exception as e:
+        return None, str(e)
+
 def fetch_data_for_sport(sport):
-    """
-    Fetches player data. 
-    SMART NFL LOGIC: Automatically searches the next 7 days for data if today returns nothing.
-    """
+    """Fetches player data with smart date logic and deduplication."""
     letters = string.ascii_uppercase
     session = requests.Session()
     sport_data = []
-    seen_players = set() # Track seen players to avoid duplicates
+    seen_players = set() 
 
-    # 1. Determine Date Strategy
+    # Determine Date Strategy
     target_dates = [datetime.date.today()]
-    
-    # If NFL, we probe the next 7 days because games aren't daily
     if sport.lower() == 'nfl':
         target_dates = [datetime.date.today() + datetime.timedelta(days=i) for i in range(7)]
 
-    # 2. Find the correct date (Probe)
+    # Find the correct date (Probe)
     active_date_str = str(datetime.date.today())
     
     if len(target_dates) > 1:
         found_date = False
         for d in target_dates:
             d_str = str(d)
-            # Probe with a common letter to see if data exists
             probe_url = (
                 f"https://api.real.vg/players/sport/{sport}/search"
                 f"?day={d_str}&includeNoOneOption=false"
@@ -96,10 +127,9 @@ def fetch_data_for_sport(sport):
                 pass
         
         if not found_date:
-            # Fallback to today if probing failed, but usually means no games
             active_date_str = str(datetime.date.today())
 
-    # 3. Fetch Full Alphabet
+    # Fetch Full Alphabet
     for letter in letters:
         query = letter
         url = (
@@ -248,10 +278,11 @@ with st.sidebar:
         sport_key = selected_sport.lower()
         url = SPORT_PROJECTION_URLS.get(sport_key)
         if url:
-            st.success(f"✅ Connected to {sport_key.upper()} Google Sheet")
+            st.success(f"✅ URL Configured for {sport_key.upper()}")
+            st.caption(f"Source: {url[:40]}...")
             current_proj_url = url
         else:
-            st.warning(f"⚠️ No Google Sheet link configured for {sport_key.upper()}.")
+            st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
     elif input_method == "Upload CSV":
         st.info("Upload CSV with Name, Points (e.g. 'FPTS', 'Proj'), and Position.")
         uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
@@ -260,7 +291,6 @@ with st.sidebar:
         pasted_text = st.text_area("Paste Data Here", height=150, placeholder="Player Name   FPTS   Position...")
 
     st.header("3. Optimization Settings")
-    # Biases removed (default 1.0)
     wr_rb_bonus = 1.0
     qb_penalty = 1.0
     num_lineups = st.slider("Number of Lineups", 1, 10, 3)
@@ -295,10 +325,12 @@ if not st.session_state.boost_data.empty:
     df_boosts = st.session_state.boost_data
     df_proj = None
     error_msg = None
+    source_type = None
     
     if input_method == "Use Global/Public Projections" and current_proj_url:
-        try: df_proj = pd.read_csv(current_proj_url)
-        except Exception as e: error_msg = f"Error reading Global URL: {e}"
+        df_proj, source_type = load_projections_from_url(current_proj_url)
+        if df_proj is None:
+            error_msg = source_type # Passes error string
     elif uploaded_file:
         try: df_proj = pd.read_csv(uploaded_file)
         except Exception as e: error_msg = f"Error reading file: {e}"
@@ -310,7 +342,11 @@ if not st.session_state.boost_data.empty:
 
     if df_proj is not None:
         try:
-            df_proj.columns = [c.strip() for c in df_proj.columns]
+            # Handle MultiIndex headers if scraped from web
+            if isinstance(df_proj.columns, pd.MultiIndex):
+                df_proj.columns = [' '.join(col).strip() for col in df_proj.columns.values]
+            
+            df_proj.columns = [str(c).strip() for c in df_proj.columns]
             
             first_name_col = find_col(df_proj.columns, ["first name", "firstname", "first"])
             last_name_col = find_col(df_proj.columns, ["last name", "lastname", "last"])
@@ -331,7 +367,6 @@ if not st.session_state.boost_data.empty:
             team_col = find_col(df_proj.columns, ["team", "tm", "squad"])
             opp_col = find_col(df_proj.columns, ["opp", "opponent", "vs"])
 
-            # Heuristic for hidden Game columns (e.g. "@" or "vs")
             if not game_col and not (team_col and opp_col):
                 for col in df_proj.columns:
                     sample = df_proj[col].dropna().astype(str).head(5)
@@ -340,6 +375,27 @@ if not st.session_state.boost_data.empty:
                         break
 
             if name_col and points_col:
+                # --- NHL LINE FILTERING ---
+                if selected_sport == 'nhl':
+                    rl_col = find_col(df_proj.columns, ["reg_line"])
+                    pp_col = find_col(df_proj.columns, ["pp_line"])
+                    
+                    if rl_col and pp_col:
+                        # Convert to numeric to handle "1" vs 1
+                        df_proj[rl_col] = pd.to_numeric(df_proj[rl_col], errors='coerce')
+                        df_proj[pp_col] = pd.to_numeric(df_proj[pp_col], errors='coerce')
+                        
+                        initial_count = len(df_proj)
+                        # Filter for Line 1 AND PP Line 1
+                        df_proj = df_proj[
+                            (df_proj[rl_col] == 1) & 
+                            (df_proj[pp_col] == 1)
+                        ]
+                        if len(df_proj) < initial_count:
+                            st.info(f"🏒 **NHL Line Filter Active:** Kept {len(df_proj)} players (Line 1 & PP 1 only).")
+                    else:
+                        st.warning("⚠️ Could not find 'reg_line' or 'pp_line' columns. No NHL line filtering applied.")
+
                 df_boosts['join_key'] = df_boosts['Player Name'].apply(normalize_name)
                 df_proj['join_key'] = df_proj[name_col].apply(normalize_name)
                 
@@ -353,19 +409,12 @@ if not st.session_state.boost_data.empty:
                         merged_df['Position'] = merged_df[pos_col].fillna(merged_df['Position'])
                     merged_df['Position'] = merged_df['Position'].apply(normalize_position)
                     
-                    # --- STANDARDIZE SLATE ---
-                    # Changed: fillna("Unknown") -> fillna("ALL")
-                    # This prevents "Unknown" from appearing as a dropdown option. 
-                    # Players with no slate are just part of the default "ALL" pool.
                     if slate_col:
                         merged_df['Slate'] = merged_df[slate_col].fillna("ALL")
                     else:
                         merged_df['Slate'] = "ALL"
                         
-                    # --- STANDARDIZE GAME ---
-                    # Priority: Construct from Team + Opp if available
                     if team_col and opp_col:
-                        # Alphabetize teams to ensure uniqueness (e.g. "ATL vs PHI" matches "PHI vs ATL")
                         merged_df['Game'] = merged_df.apply(
                             lambda x: " vs ".join(sorted([str(x[team_col]), str(x[opp_col])])), axis=1
                         )
@@ -411,27 +460,16 @@ if not st.session_state.boost_data.empty:
                         
                         col1, col2 = st.columns(2)
                         
-                        # --- FILTER: SLATE ---
                         with col1:
                             unique_slates = sorted(list(set(merged_df['Slate'].astype(str).unique().tolist()) - {"ALL"}))
                             slate_options = ["ALL"] + unique_slates
-                            selected_slates = st.multiselect(
-                                "Filter by Slate:", 
-                                slate_options, 
-                                default=["ALL"]
-                            )
+                            selected_slates = st.multiselect("Filter by Slate:", slate_options, default=["ALL"])
 
-                        # --- FILTER: GAME ---
                         with col2:
                             unique_games = sorted(list(set(merged_df['Game'].astype(str).unique().tolist()) - {"ALL"}))
                             game_options = ["ALL"] + unique_games
-                            selected_games = st.multiselect(
-                                "Filter by Game:", 
-                                game_options, 
-                                default=["ALL"]
-                            )
+                            selected_games = st.multiselect("Filter by Game:", game_options, default=["ALL"])
                         
-                        # Apply Filters
                         filtered_df = merged_df.copy()
                         
                         if "ALL" not in selected_slates:
@@ -465,13 +503,6 @@ if not st.session_state.boost_data.empty:
                                         )
                             else:
                                 st.error("Could not generate lineup. Not enough players matched (need at least 5).")
-                        
-                        with st.expander("Debug: Column Detection"):
-                            st.write(f"**Game Col:** {game_col}")
-                            st.write(f"**Team Col:** {team_col}")
-                            st.write(f"**Opp Col:** {opp_col}")
-                            st.write(f"**Slate Col:** {slate_col}")
-                            st.dataframe(df_proj.head(3))
             else:
                 st.error(f"Could not find Name or Points columns. Found: {df_proj.columns.tolist()}")
         except Exception as e:
