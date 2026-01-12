@@ -56,7 +56,6 @@ def find_col(columns, keywords):
 def calculate_nba_custom_rating(row, mapping):
     """
     Calculates player rating based on the user-provided efficiency formula.
-    Requires mapping of CSV columns to stat keys.
     """
     # Extract values safely, defaulting to 0.0
     stats = {}
@@ -75,6 +74,7 @@ def calculate_nba_custom_rating(row, mapping):
     missed_fg = stats['fga'] - stats['fgm']
     missed_ft = stats['fta'] - stats['ftm']
 
+    # Weights from user formula
     rating += two_pm * 0.22          # Standard Basket
     rating += stats['3pm'] * 0.35    # 3-Pointer (Premium)
     rating += stats['ftm'] * 0.10    # Free Throw
@@ -425,7 +425,7 @@ if not st.session_state.boost_data.empty:
                         )
                         points_col = 'Calculated_Rating'
                         custom_rating_applied = True
-                        st.success("✅ Applied Custom NBA Efficiency Formula using raw stats found in data.")
+                        st.success("✅ Applied Custom NBA Efficiency Formula based on stats. Ignoring default fantasy score.")
 
                 # --- NHL LINE FILTERING ---
                 if selected_sport == 'nhl':
