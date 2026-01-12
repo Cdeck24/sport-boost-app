@@ -8,12 +8,10 @@ import pulp
 import io
 
 # --- ⬇️ PASTE YOUR LINKS HERE (CSV or Webpages) ⬇️ ---
-# You can now paste direct website URLs (e.g. Rotowire, FantasyPros) 
-# The app will try to scrape the table directly.
 SPORT_PROJECTION_URLS = {
-    "nba": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=0&single=true&output=csv", 
-    "nfl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1180552482&single=true&output=csv",
-    "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv"
+    "nba": "https://www.dailyfantasyfuel.com/nba/projections/", 
+    "nfl": "https://www.dailyfantasyfuel.com/nfl/projections/",
+    "nhl": "https://www.dailyfantasyfuel.com/nhl/projections/"
 }
 # ---------------------------------------------------
 
@@ -28,7 +26,7 @@ This tool fetches live **Boost Multipliers** from the API and allows you to merg
 
 # --- Helper Functions ---
 def normalize_name(name):
-    """Robust normalization for names (especially NFL)."""
+    """Robust normalization for names."""
     n = str(name).lower()
     suffixes = [' jr', ' sr', ' ii', ' iii', ' iv', ' v', ' jr.', ' sr.']
     for suffix in suffixes:
@@ -55,11 +53,48 @@ def find_col(columns, keywords):
             return col
     return None
 
+def calculate_nba_custom_rating(row, mapping):
+    """
+    Calculates player rating based on the user-provided efficiency formula.
+    Requires mapping of CSV columns to stat keys.
+    """
+    # Extract values safely, defaulting to 0.0
+    stats = {}
+    for key, col_name in mapping.items():
+        try:
+            val = float(row.get(col_name, 0.0))
+            if pd.isna(val): val = 0.0
+            stats[key] = val
+        except:
+            stats[key] = 0.0
+
+    rating = 0.0
+    
+    # --- 1. Scoring & Efficiency ---
+    two_pm = stats['fgm'] - stats['3pm']
+    missed_fg = stats['fga'] - stats['fgm']
+    missed_ft = stats['fta'] - stats['ftm']
+
+    rating += two_pm * 0.22          # Standard Basket
+    rating += stats['3pm'] * 0.35    # 3-Pointer (Premium)
+    rating += stats['ftm'] * 0.10    # Free Throw
+    
+    rating -= missed_fg * 0.08       # Penalty for Missing FG
+    rating -= missed_ft * 0.05       # Penalty for Missing FT
+
+    # --- 2. Playmaking & Possession ---
+    rating += stats['reb'] * 0.11    # Rebounds
+    rating += stats['ast'] * 0.15    # Assists
+    rating -= stats['to']  * 0.20    # Turnovers
+
+    # --- 3. Defense ---
+    rating += stats['stl'] * 0.20    # Steal
+    rating += stats['blk'] * 0.18    # Block
+
+    return round(rating, 2)
+
 def load_projections_from_url(url):
-    """
-    Smart Fetcher: Tries to read URL as CSV first, then as HTML tables.
-    Includes User-Agent headers to avoid 403 Forbidden errors from some sites.
-    """
+    """Smart Fetcher: Tries to read URL as CSV first, then as HTML tables."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
@@ -69,19 +104,16 @@ def load_projections_from_url(url):
         response.raise_for_status()
         content = response.content
         
-        # 1. Try Parsing as CSV
         try:
             return pd.read_csv(io.BytesIO(content)), "CSV"
         except:
             pass
             
-        # 2. Try Parsing as HTML (Web Scraper)
         try:
             tables = pd.read_html(io.BytesIO(content))
             if tables:
-                # Heuristic: Return the table with the most rows
                 largest_table = max(tables, key=len)
-                if len(largest_table) > 5: # Basic sanity check
+                if len(largest_table) > 5:
                     return largest_table, "HTML"
         except:
             pass
@@ -92,18 +124,16 @@ def load_projections_from_url(url):
         return None, str(e)
 
 def fetch_data_for_sport(sport):
-    """Fetches player data with smart date logic and deduplication."""
+    """Fetches player data from API."""
     letters = string.ascii_uppercase
     session = requests.Session()
     sport_data = []
     seen_players = set() 
 
-    # Determine Date Strategy
     target_dates = [datetime.date.today()]
     if sport.lower() == 'nfl':
         target_dates = [datetime.date.today() + datetime.timedelta(days=i) for i in range(7)]
 
-    # Find the correct date (Probe)
     active_date_str = str(datetime.date.today())
     
     if len(target_dates) > 1:
@@ -129,7 +159,6 @@ def fetch_data_for_sport(sport):
         if not found_date:
             active_date_str = str(datetime.date.today())
 
-    # Fetch Full Alphabet
     for letter in letters:
         query = letter
         url = (
@@ -330,7 +359,7 @@ if not st.session_state.boost_data.empty:
     if input_method == "Use Global/Public Projections" and current_proj_url:
         df_proj, source_type = load_projections_from_url(current_proj_url)
         if df_proj is None:
-            error_msg = source_type # Passes error string
+            error_msg = source_type
     elif uploaded_file:
         try: df_proj = pd.read_csv(uploaded_file)
         except Exception as e: error_msg = f"Error reading file: {e}"
@@ -342,7 +371,6 @@ if not st.session_state.boost_data.empty:
 
     if df_proj is not None:
         try:
-            # Handle MultiIndex headers if scraped from web
             if isinstance(df_proj.columns, pd.MultiIndex):
                 df_proj.columns = [' '.join(col).strip() for col in df_proj.columns.values]
             
@@ -361,7 +389,6 @@ if not st.session_state.boost_data.empty:
             points_col = find_col(df_proj.columns, ["ppg", "fantasy", "proj", "fpts", "pts", "avg", "fp"])
             pos_col = find_col(df_proj.columns, ["pos", "position"])
             
-            # --- SPLIT COLUMN DETECTION ---
             slate_col = find_col(df_proj.columns, ["slate", "contest", "label"])
             game_col = find_col(df_proj.columns, ["game", "matchup", "match"])
             team_col = find_col(df_proj.columns, ["team", "tm", "squad"])
@@ -375,26 +402,45 @@ if not st.session_state.boost_data.empty:
                         break
 
             if name_col and points_col:
+                # --- SPECIAL NBA RATING LOGIC ---
+                custom_rating_applied = False
+                if selected_sport == "nba":
+                    # Map required keys to potential column names
+                    nba_cols_map = {
+                        "fgm": find_col(df_proj.columns, ["fgm", "fg made"]),
+                        "fga": find_col(df_proj.columns, ["fga", "fg attempt"]),
+                        "3pm": find_col(df_proj.columns, ["3pm", "3pt made", "3p"]),
+                        "ftm": find_col(df_proj.columns, ["ftm", "ft made"]),
+                        "fta": find_col(df_proj.columns, ["fta", "ft attempt"]),
+                        "reb": find_col(df_proj.columns, ["reb", "tot reb"]),
+                        "ast": find_col(df_proj.columns, ["ast", "assist"]),
+                        "stl": find_col(df_proj.columns, ["stl", "steal"]),
+                        "blk": find_col(df_proj.columns, ["blk", "block"]),
+                        "to":  find_col(df_proj.columns, ["to", "tov", "turnover"])
+                    }
+                    
+                    # Check if ALL required columns exist
+                    if all(v is not None for v in nba_cols_map.values()):
+                        df_proj['Calculated_Rating'] = df_proj.apply(
+                            lambda row: calculate_nba_custom_rating(row, nba_cols_map), axis=1
+                        )
+                        # Override the default points column key to use our new calculation
+                        points_col = 'Calculated_Rating'
+                        custom_rating_applied = True
+                        st.success("✅ Applied Custom NBA Efficiency Formula using raw stats found in data.")
+
                 # --- NHL LINE FILTERING ---
                 if selected_sport == 'nhl':
                     rl_col = find_col(df_proj.columns, ["reg_line"])
                     pp_col = find_col(df_proj.columns, ["pp_line"])
                     
                     if rl_col and pp_col:
-                        # Convert to numeric to handle "1" vs 1
                         df_proj[rl_col] = pd.to_numeric(df_proj[rl_col], errors='coerce')
                         df_proj[pp_col] = pd.to_numeric(df_proj[pp_col], errors='coerce')
-                        
                         initial_count = len(df_proj)
-                        # Filter for Line 1 AND PP Line 1
-                        df_proj = df_proj[
-                            (df_proj[rl_col] == 1) & 
-                            (df_proj[pp_col] == 1)
-                        ]
+                        df_proj = df_proj[(df_proj[rl_col] == 1) & (df_proj[pp_col] == 1)]
                         if len(df_proj) < initial_count:
-                            st.info(f"🏒 **NHL Line Filter Active:** Kept {len(df_proj)} players (Line 1 & PP 1 only).")
-                    else:
-                        st.warning("⚠️ Could not find 'reg_line' or 'pp_line' columns. No NHL line filtering applied.")
+                            st.info(f"🏒 **NHL Line Filter Active:** Kept {len(df_proj)} players (Line 1 & PP 1).")
 
                 df_boosts['join_key'] = df_boosts['Player Name'].apply(normalize_name)
                 df_proj['join_key'] = df_proj[name_col].apply(normalize_name)
@@ -402,7 +448,7 @@ if not st.session_state.boost_data.empty:
                 merged_df = pd.merge(df_boosts, df_proj, on='join_key', how='inner')
                 
                 if merged_df.empty:
-                    st.error("No players matched! This usually means names didn't match or the date is wrong.")
+                    st.error("No players matched! Check names/dates.")
                 else:
                     merged_df = merged_df.rename(columns={points_col: 'Projection'})
                     if pos_col:
@@ -459,7 +505,6 @@ if not st.session_state.boost_data.empty:
                         st.subheader("Generate Lineups")
                         
                         col1, col2 = st.columns(2)
-                        
                         with col1:
                             unique_slates = sorted(list(set(merged_df['Slate'].astype(str).unique().tolist()) - {"ALL"}))
                             slate_options = ["ALL"] + unique_slates
