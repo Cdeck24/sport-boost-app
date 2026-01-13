@@ -25,12 +25,6 @@ This tool fetches live **Boost Multipliers** from the API and allows you to merg
 """)
 
 # --- Helper Functions ---
-def get_fantasy_day():
-    """Returns the current date in US Eastern Time (approximate)."""
-    utc_now = datetime.datetime.now(datetime.timezone.utc)
-    us_time = utc_now - datetime.timedelta(hours=5)
-    return us_time.date()
-
 def normalize_name(name):
     """Robust normalization for names."""
     n = str(name).lower()
@@ -61,7 +55,10 @@ def find_col(columns, keywords):
     return None
 
 def calculate_nba_custom_rating(row, mapping):
-    """Calculates player rating based on the user-provided efficiency formula."""
+    """
+    Calculates player rating based on the user-provided efficiency formula.
+    """
+    # Extract values safely, defaulting to 0.0
     stats = {}
     for key, col_name in mapping.items():
         try:
@@ -78,23 +75,54 @@ def calculate_nba_custom_rating(row, mapping):
     missed_fg = stats['fga'] - stats['fgm']
     missed_ft = stats['fta'] - stats['ftm']
 
-    rating += two_pm * 0.22
-    rating += stats['3pm'] * 0.35
-    rating += stats['ftm'] * 0.10
+    # Weights from user formula
+    rating += two_pm * 0.22          # Standard Basket
+    rating += stats['3pm'] * 0.35    # 3-Pointer (Premium)
+    rating += stats['ftm'] * 0.10    # Free Throw
     
-    rating -= missed_fg * 0.08
-    rating -= missed_ft * 0.05
+    rating -= missed_fg * 0.08       # Penalty for Missing FG
+    rating -= missed_ft * 0.05       # Penalty for Missing FT
 
     # --- 2. Playmaking & Possession ---
-    rating += stats['reb'] * 0.11
-    rating += stats['ast'] * 0.15
-    rating -= stats['to']  * 0.20
+    rating += stats['reb'] * 0.11    # Rebounds
+    rating += stats['ast'] * 0.15    # Assists
+    rating -= stats['to']  * 0.20    # Turnovers
 
     # --- 3. Defense ---
-    rating += stats['stl'] * 0.20
-    rating += stats['blk'] * 0.18
+    rating += stats['stl'] * 0.20    # Steal
+    rating += stats['blk'] * 0.18    # Block
 
     return round(rating, 2)
+
+def load_projections_from_url(url):
+    """Smart Fetcher: Tries to read URL as CSV first, then as HTML tables."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        content = response.content
+        
+        try:
+            return pd.read_csv(io.BytesIO(content)), "CSV"
+        except:
+            pass
+            
+        try:
+            tables = pd.read_html(io.BytesIO(content))
+            if tables:
+                largest_table = max(tables, key=len)
+                if len(largest_table) > 5:
+                    return largest_table, "HTML"
+        except:
+            pass
+            
+        return None, "Could not identify CSV or HTML Table data."
+        
+    except Exception as e:
+        return None, str(e)
 
 def fetch_data_for_sport(sport):
     """Fetches player data from API."""
@@ -103,12 +131,11 @@ def fetch_data_for_sport(sport):
     sport_data = []
     seen_players = set() 
 
-    current_us_date = get_fantasy_day()
-    target_dates = [current_us_date]
+    target_dates = [datetime.date.today()]
     if sport.lower() == 'nfl':
-        target_dates = [current_us_date + datetime.timedelta(days=i) for i in range(7)]
+        target_dates = [datetime.date.today() + datetime.timedelta(days=i) for i in range(7)]
 
-    active_date_str = str(current_us_date)
+    active_date_str = str(datetime.date.today())
     
     if len(target_dates) > 1:
         found_date = False
@@ -131,7 +158,7 @@ def fetch_data_for_sport(sport):
                 pass
         
         if not found_date:
-            active_date_str = str(current_us_date)
+            active_date_str = str(datetime.date.today())
 
     for letter in letters:
         query = letter
@@ -148,10 +175,8 @@ def fetch_data_for_sport(sport):
             if not players: continue
 
             for player in players:
-                raw_injury = player.get('injuryStatus')
-                injury_status = str(raw_injury).strip().upper() if raw_injury else ""
-                
-                if injury_status in ['O', 'OUT', 'IR', 'INJ']: 
+                injury_status = player.get('injuryStatus', '')
+                if injury_status == 'O':
                     continue
 
                 position = player.get('position', 'Unknown')
@@ -188,31 +213,6 @@ def fetch_data_for_sport(sport):
             
     return sport_data
 
-def load_projections_from_url(url):
-    """Smart Fetcher: Tries to read URL as CSV first, then as HTML tables."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        content = response.content
-        try:
-            return pd.read_csv(io.BytesIO(content)), "CSV"
-        except:
-            pass
-        try:
-            tables = pd.read_html(io.BytesIO(content))
-            if tables:
-                largest_table = max(tables, key=len)
-                if len(largest_table) > 5:
-                    return largest_table, "HTML"
-        except:
-            pass
-        return None, "Could not identify CSV or HTML Table data."
-    except Exception as e:
-        return None, str(e)
-
 def run_optimization(df, num_lineups=1):
     """Runs Assignment Problem solver."""
     SLOT_ADDERS = [2.0, 1.8, 1.6, 1.4, 1.2]
@@ -221,8 +221,6 @@ def run_optimization(df, num_lineups=1):
     if len(df) < NUM_SLOTS:
         return None
 
-    # Sort by Optimization Score (Boost + 2.0 * Projection)
-    # This ensures 0 boost players with high projections are prioritized
     df = df.sort_values('Optimization Score', ascending=False)
     df = df.drop_duplicates(subset=['Player Name'], keep='first').reset_index(drop=True)
     
@@ -242,7 +240,6 @@ def run_optimization(df, num_lineups=1):
             raw_boost = df.loc[i, 'Boost']
             adj_proj = df.loc[i, 'Adjusted Projection'] 
             slot_add = SLOT_ADDERS[j]
-            # Points = (Boost + SlotMultiplier) * Projection
             points = (raw_boost + slot_add) * adj_proj
             obj_terms.append(points * x[i][j])
             
@@ -353,17 +350,8 @@ if fetch_btn:
         st.success(f"Fetched {len(st.session_state.boost_data)} players{date_msg}.")
     else:
         st.warning(f"No boosts found for {selected_sport.upper()}. (For NFL, we checked next 7 days).")
-        # Ensure we still have an empty dataframe to allow processing CSV-only data if API is empty
-        st.session_state.boost_data = pd.DataFrame(columns=['Sport', 'Player Name', 'Position', 'Boost', 'Date', 'Injury'])
 
-# Check if we should proceed (allow if boost_data exists OR if user wants to use CSV anyway)
-proceed = False
 if not st.session_state.boost_data.empty:
-    proceed = True
-elif fetch_btn: # Just clicked, but empty results
-    proceed = True
-
-if proceed:
     df_boosts = st.session_state.boost_data
     df_proj = None
     error_msg = None
@@ -389,6 +377,7 @@ if proceed:
             
             df_proj.columns = [str(c).strip() for c in df_proj.columns]
             
+            # --- Column Detection ---
             first_name_col = find_col(df_proj.columns, ["first name", "firstname", "first"])
             last_name_col = find_col(df_proj.columns, ["last name", "lastname", "last"])
             
@@ -399,10 +388,11 @@ if proceed:
             else:
                 name_col = find_col(df_proj.columns, ["player", "name", "who"])
 
-            points_col = None 
+            points_col = None # Initialize to None
             
-            # --- SPECIAL NBA RATING LOGIC ---
+            # --- SPECIAL NBA RATING LOGIC (Priority) ---
             if selected_sport == "nba":
+                # Explicit Mapping based on user provided columns
                 nba_cols_map = {
                     "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
                     "fga": find_col(df_proj.columns, ["fieldGoalsAttempted", "fga"]),
@@ -416,7 +406,9 @@ if proceed:
                     "to":  find_col(df_proj.columns, ["turnovers", "to", "tov"])
                 }
                 
+                # Check for missing keys
                 missing_keys = [k for k, v in nba_cols_map.items() if v is None]
+                
                 if not missing_keys:
                     df_proj['Calculated_Rating'] = df_proj.apply(
                         lambda row: calculate_nba_custom_rating(row, nba_cols_map), axis=1
@@ -426,6 +418,7 @@ if proceed:
                 else:
                     st.error(f"❌ NBA Custom Rating Failed. Missing stats for: {', '.join(missing_keys)}")
             
+            # Fallback: Look for standard fantasy score if no custom rating (or not NBA)
             if not points_col:
                 points_col = find_col(df_proj.columns, ["ppg", "fantasy", "proj", "fpts", "pts", "avg", "fp"])
 
@@ -434,11 +427,6 @@ if proceed:
             game_col = find_col(df_proj.columns, ["game", "matchup", "match"])
             team_col = find_col(df_proj.columns, ["team", "tm", "squad"])
             opp_col = find_col(df_proj.columns, ["opp", "opponent", "vs"])
-            
-            # --- FIXED INJURY FILTERING (CSV Source) ---
-            injury_csv_col = find_col(df_proj.columns, ["injury", "status"])
-            if injury_csv_col:
-                df_proj = df_proj[~df_proj[injury_csv_col].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])]
 
             if not game_col and not (team_col and opp_col):
                 for col in df_proj.columns:
@@ -448,9 +436,11 @@ if proceed:
                         break
 
             if name_col and points_col:
+                # --- NHL LINE FILTERING ---
                 if selected_sport == 'nhl':
                     rl_col = find_col(df_proj.columns, ["reg_line"])
                     pp_col = find_col(df_proj.columns, ["pp_line"])
+                    
                     if rl_col and pp_col:
                         df_proj[rl_col] = pd.to_numeric(df_proj[rl_col], errors='coerce')
                         df_proj[pp_col] = pd.to_numeric(df_proj[pp_col], errors='coerce')
@@ -462,20 +452,8 @@ if proceed:
                 df_boosts['join_key'] = df_boosts['Player Name'].apply(normalize_name)
                 df_proj['join_key'] = df_proj[name_col].apply(normalize_name)
                 
-                # Right Join to keep all CSV players
-                merged_df = pd.merge(df_boosts, df_proj, on='join_key', how='right')
+                merged_df = pd.merge(df_boosts, df_proj, on='join_key', how='inner')
                 
-                # Fill NAs
-                merged_df['Boost'] = merged_df['Boost'].fillna(0.0)
-                merged_df['Player Name'] = merged_df['Player Name'].fillna(merged_df[name_col])
-                if pos_col:
-                    merged_df['Position'] = merged_df['Position'].fillna(merged_df[pos_col])
-                merged_df['Injury'] = merged_df['Injury'].fillna('')
-                merged_df['Sport'] = merged_df['Sport'].fillna(selected_sport.upper())
-
-                # Post-merge injury check
-                merged_df = merged_df[~merged_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])]
-
                 if merged_df.empty:
                     st.error("No players matched! Check names/dates.")
                 else:
@@ -508,23 +486,16 @@ if proceed:
 
                     merged_df['Bias'] = merged_df.apply(get_bias_multiplier, axis=1)
                     merged_df['Adjusted Projection'] = merged_df['Projection'] * merged_df['Bias']
-                    
-                    # --- FIXED SCORING LOGIC ---
-                    # Calculate "Max Potential Score" (Assuming Slot 1 / 2.0x Slot Bonus)
-                    # This ensures players with 0 Boost still have a high value if their projection is good.
-                    merged_df['Optimization Score'] = (merged_df['Boost'] + 2.0) * merged_df['Adjusted Projection']
-                    
-                    # Est. Score for display (showing Base + Boost value roughly)
+                    merged_df['Optimization Score'] = merged_df['Boost'] * merged_df['Adjusted Projection']
                     merged_df['Est. Score'] = merged_df['Boost'] * merged_df['Projection']
 
                     tab1, tab2, tab3 = st.tabs(["📊 Data Browser", "💎 Best Value", "🚀 Lineup Optimizer"])
                     
                     with tab1:
                         st.markdown("### Player Pool (Raw Data)")
-                        cols = ['Sport', 'Slate', 'Game', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Optimization Score']
+                        cols = ['Sport', 'Slate', 'Game', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Est. Score']
                         cols = [c for c in cols if c in merged_df.columns]
-                        # Sorted by Optimization Score so 0-boost/High-Proj players appear at top
-                        st.dataframe(merged_df[cols].sort_values('Optimization Score', ascending=False), use_container_width=True)
+                        st.dataframe(merged_df[cols].sort_values('Est. Score', ascending=False), use_container_width=True)
                         csv_data = merged_df[cols].to_csv(index=False)
                         st.download_button("Download Data CSV", csv_data, "player_pool.csv", "text/csv")
 
@@ -539,6 +510,7 @@ if proceed:
 
                     with tab3:
                         st.subheader("Generate Lineups")
+                        
                         col1, col2 = st.columns(2)
                         with col1:
                             unique_slates = sorted(list(set(merged_df['Slate'].astype(str).unique().tolist()) - {"ALL"}))
@@ -551,8 +523,10 @@ if proceed:
                             selected_games = st.multiselect("Filter by Game:", game_options, default=["ALL"])
                         
                         filtered_df = merged_df.copy()
+                        
                         if "ALL" not in selected_slates:
                             filtered_df = filtered_df[filtered_df['Slate'].isin(selected_slates)]
+                            
                         if "ALL" not in selected_games:
                             filtered_df = filtered_df[filtered_df['Game'].isin(selected_games)]
                             
@@ -563,12 +537,13 @@ if proceed:
                             if lineups:
                                 for idx, lineup in enumerate(lineups):
                                     total_score = lineup['Points'].sum()
-                                    q_players = lineup[lineup['Injury'].astype(str).str.startswith('Q', na=False)]['Player Name'].tolist()
+                                    q_players = lineup[lineup['Injury'] == 'Q']['Player Name'].tolist()
                                     warn_icon = "⚠️ " if q_players else ""
                                     
                                     with st.expander(f"{warn_icon}Lineup #{idx+1} | Total Score: {total_score:.2f}", expanded=(idx==0)):
                                         if q_players:
                                             st.warning(f"**Questionable Status:** {', '.join(q_players)}")
+                                        
                                         st.dataframe(
                                             lineup.drop(columns=['Injury']), 
                                             column_config={
