@@ -25,6 +25,18 @@ This tool fetches live **Boost Multipliers** from the API and allows you to merg
 """)
 
 # --- Helper Functions ---
+def get_fantasy_day():
+    """
+    Returns the current date in US Eastern Time (approximate).
+    This prevents the date from rolling over to 'tomorrow' too early (when it's still evening in the US).
+    """
+    # Get current UTC time
+    utc_now = datetime.datetime.now(datetime.timezone.utc)
+    # Subtract 5 hours to align roughly with US Eastern Time
+    # This ensures that at 8PM EST (1AM UTC), we are still fetching for "Today"
+    us_time = utc_now - datetime.timedelta(hours=5)
+    return us_time.date()
+
 def normalize_name(name):
     """Robust normalization for names."""
     n = str(name).lower()
@@ -131,11 +143,15 @@ def fetch_data_for_sport(sport):
     sport_data = []
     seen_players = set() 
 
-    target_dates = [datetime.date.today()]
-    if sport.lower() == 'nfl':
-        target_dates = [datetime.date.today() + datetime.timedelta(days=i) for i in range(7)]
+    # Use the helper to get the US-centric date
+    current_us_date = get_fantasy_day()
 
-    active_date_str = str(datetime.date.today())
+    target_dates = [current_us_date]
+    if sport.lower() == 'nfl':
+        # For NFL, check next 7 days starting from US date
+        target_dates = [current_us_date + datetime.timedelta(days=i) for i in range(7)]
+
+    active_date_str = str(current_us_date)
     
     if len(target_dates) > 1:
         found_date = False
@@ -158,7 +174,7 @@ def fetch_data_for_sport(sport):
                 pass
         
         if not found_date:
-            active_date_str = str(datetime.date.today())
+            active_date_str = str(current_us_date)
 
     for letter in letters:
         query = letter
@@ -377,7 +393,6 @@ if not st.session_state.boost_data.empty:
             
             df_proj.columns = [str(c).strip() for c in df_proj.columns]
             
-            # --- Column Detection ---
             first_name_col = find_col(df_proj.columns, ["first name", "firstname", "first"])
             last_name_col = find_col(df_proj.columns, ["last name", "lastname", "last"])
             
@@ -388,7 +403,7 @@ if not st.session_state.boost_data.empty:
             else:
                 name_col = find_col(df_proj.columns, ["player", "name", "who"])
 
-            points_col = None # Initialize to None
+            points_col = None 
             
             # --- SPECIAL NBA RATING LOGIC (Priority) ---
             if selected_sport == "nba":
@@ -406,7 +421,6 @@ if not st.session_state.boost_data.empty:
                     "to":  find_col(df_proj.columns, ["turnovers", "to", "tov"])
                 }
                 
-                # Check for missing keys
                 missing_keys = [k for k, v in nba_cols_map.items() if v is None]
                 
                 if not missing_keys:
@@ -418,7 +432,6 @@ if not st.session_state.boost_data.empty:
                 else:
                     st.error(f"❌ NBA Custom Rating Failed. Missing stats for: {', '.join(missing_keys)}")
             
-            # Fallback: Look for standard fantasy score if no custom rating (or not NBA)
             if not points_col:
                 points_col = find_col(df_proj.columns, ["ppg", "fantasy", "proj", "fpts", "pts", "avg", "fp"])
 
@@ -565,3 +578,5 @@ if not st.session_state.boost_data.empty:
         st.info("Waiting for Projections (Upload, Paste, or Configure Global URL).")
 else:
     st.write("Waiting for data fetch...")
+
+
