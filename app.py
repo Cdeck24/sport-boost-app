@@ -7,7 +7,7 @@ import concurrent.futures
 import pulp
 import io
 
-# --- ⬇️ PASTE YOUR LINKS HERE (CSV or Webpages) ⬇️ ---
+# --- ⬇️ PASTE YOUR GOOGLE SHEET CSV LINKS HERE ⬇️ ---
 SPORT_PROJECTION_URLS = {
     "nba": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=0&single=true&output=csv", 
     "nfl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1180552482&single=true&output=csv",
@@ -30,10 +30,7 @@ def get_fantasy_day():
     Returns the current date in US Eastern Time (approximate).
     This prevents the date from rolling over to 'tomorrow' too early (when it's still evening in the US).
     """
-    # Get current UTC time
     utc_now = datetime.datetime.now(datetime.timezone.utc)
-    # Subtract 5 hours to align roughly with US Eastern Time
-    # This ensures that at 8PM EST (1AM UTC), we are still fetching for "Today"
     us_time = utc_now - datetime.timedelta(hours=5)
     return us_time.date()
 
@@ -105,36 +102,6 @@ def calculate_nba_custom_rating(row, mapping):
     rating += stats['blk'] * 0.18    # Block
 
     return round(rating, 2)
-
-def load_projections_from_url(url):
-    """Smart Fetcher: Tries to read URL as CSV first, then as HTML tables."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-    
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        content = response.content
-        
-        try:
-            return pd.read_csv(io.BytesIO(content)), "CSV"
-        except:
-            pass
-            
-        try:
-            tables = pd.read_html(io.BytesIO(content))
-            if tables:
-                largest_table = max(tables, key=len)
-                if len(largest_table) > 5:
-                    return largest_table, "HTML"
-        except:
-            pass
-            
-        return None, "Could not identify CSV or HTML Table data."
-        
-    except Exception as e:
-        return None, str(e)
 
 def fetch_data_for_sport(sport):
     """Fetches player data from API."""
@@ -371,12 +338,15 @@ if not st.session_state.boost_data.empty:
     df_boosts = st.session_state.boost_data
     df_proj = None
     error_msg = None
-    source_type = None
     
     if input_method == "Use Global/Public Projections" and current_proj_url:
-        df_proj, source_type = load_projections_from_url(current_proj_url)
-        if df_proj is None:
-            error_msg = source_type
+        try:
+            # Reverted to simple CSV reading as requested, but with a timeout
+            response = requests.get(current_proj_url, timeout=10)
+            response.raise_for_status()
+            df_proj = pd.read_csv(io.BytesIO(response.content))
+        except Exception as e:
+            error_msg = f"Error reading Global URL: {e}"
     elif uploaded_file:
         try: df_proj = pd.read_csv(uploaded_file)
         except Exception as e: error_msg = f"Error reading file: {e}"
