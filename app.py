@@ -6,6 +6,7 @@ import pandas as pd
 import concurrent.futures
 import pulp
 import io
+import unicodedata
 
 # --- ⬇️ PASTE YOUR LINKS HERE (CSV or Webpages) ⬇️ ---
 SPORT_PROJECTION_URLS = {
@@ -32,8 +33,11 @@ def get_fantasy_day():
     return us_time.date()
 
 def normalize_name(name):
-    """Robust normalization for names."""
+    """Robust normalization for names with accent removal."""
     n = str(name).lower()
+    # Normalize unicode characters (e.g. Doncic vs Dončić)
+    n = unicodedata.normalize('NFKD', n).encode('ascii', 'ignore').decode('utf-8')
+    
     suffixes = [' jr', ' sr', ' ii', ' iii', ' iv', ' v', ' jr.', ' sr.']
     for suffix in suffixes:
         if n.endswith(suffix):
