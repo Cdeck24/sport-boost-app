@@ -148,11 +148,9 @@ def fetch_data_for_sport(sport):
             if not players: continue
 
             for player in players:
-                # --- FIXED INJURY FILTERING (API) ---
                 raw_injury = player.get('injuryStatus')
                 injury_status = str(raw_injury).strip().upper() if raw_injury else ""
                 
-                # Filter 'O' (Out), 'IR', 'OUT'
                 if injury_status in ['O', 'OUT', 'IR', 'INJ']: 
                     continue
 
@@ -223,6 +221,8 @@ def run_optimization(df, num_lineups=1):
     if len(df) < NUM_SLOTS:
         return None
 
+    # Sort by Optimization Score (Boost + 2.0 * Projection)
+    # This ensures 0 boost players with high projections are prioritized
     df = df.sort_values('Optimization Score', ascending=False)
     df = df.drop_duplicates(subset=['Player Name'], keep='first').reset_index(drop=True)
     
@@ -242,6 +242,7 @@ def run_optimization(df, num_lineups=1):
             raw_boost = df.loc[i, 'Boost']
             adj_proj = df.loc[i, 'Adjusted Projection'] 
             slot_add = SLOT_ADDERS[j]
+            # Points = (Boost + SlotMultiplier) * Projection
             points = (raw_boost + slot_add) * adj_proj
             obj_terms.append(points * x[i][j])
             
@@ -352,8 +353,17 @@ if fetch_btn:
         st.success(f"Fetched {len(st.session_state.boost_data)} players{date_msg}.")
     else:
         st.warning(f"No boosts found for {selected_sport.upper()}. (For NFL, we checked next 7 days).")
+        # Ensure we still have an empty dataframe to allow processing CSV-only data if API is empty
+        st.session_state.boost_data = pd.DataFrame(columns=['Sport', 'Player Name', 'Position', 'Boost', 'Date', 'Injury'])
 
+# Check if we should proceed (allow if boost_data exists OR if user wants to use CSV anyway)
+proceed = False
 if not st.session_state.boost_data.empty:
+    proceed = True
+elif fetch_btn: # Just clicked, but empty results
+    proceed = True
+
+if proceed:
     df_boosts = st.session_state.boost_data
     df_proj = None
     error_msg = None
@@ -379,7 +389,6 @@ if not st.session_state.boost_data.empty:
             
             df_proj.columns = [str(c).strip() for c in df_proj.columns]
             
-            # --- Column Detection ---
             first_name_col = find_col(df_proj.columns, ["first name", "firstname", "first"])
             last_name_col = find_col(df_proj.columns, ["last name", "lastname", "last"])
             
@@ -429,13 +438,7 @@ if not st.session_state.boost_data.empty:
             # --- FIXED INJURY FILTERING (CSV Source) ---
             injury_csv_col = find_col(df_proj.columns, ["injury", "status"])
             if injury_csv_col:
-                # Filter 'O', 'OUT', 'IR' from projection source
-                # Keep only players who are NOT OUT
-                initial_count = len(df_proj)
                 df_proj = df_proj[~df_proj[injury_csv_col].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])]
-                if len(df_proj) < initial_count:
-                    # st.info(f"Filtered {initial_count - len(df_proj)} players marked 'O' in projections.")
-                    pass
 
             if not game_col and not (team_col and opp_col):
                 for col in df_proj.columns:
@@ -459,8 +462,20 @@ if not st.session_state.boost_data.empty:
                 df_boosts['join_key'] = df_boosts['Player Name'].apply(normalize_name)
                 df_proj['join_key'] = df_proj[name_col].apply(normalize_name)
                 
-                merged_df = pd.merge(df_boosts, df_proj, on='join_key', how='inner')
+                # Right Join to keep all CSV players
+                merged_df = pd.merge(df_boosts, df_proj, on='join_key', how='right')
                 
+                # Fill NAs
+                merged_df['Boost'] = merged_df['Boost'].fillna(0.0)
+                merged_df['Player Name'] = merged_df['Player Name'].fillna(merged_df[name_col])
+                if pos_col:
+                    merged_df['Position'] = merged_df['Position'].fillna(merged_df[pos_col])
+                merged_df['Injury'] = merged_df['Injury'].fillna('')
+                merged_df['Sport'] = merged_df['Sport'].fillna(selected_sport.upper())
+
+                # Post-merge injury check
+                merged_df = merged_df[~merged_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])]
+
                 if merged_df.empty:
                     st.error("No players matched! Check names/dates.")
                 else:
@@ -493,16 +508,23 @@ if not st.session_state.boost_data.empty:
 
                     merged_df['Bias'] = merged_df.apply(get_bias_multiplier, axis=1)
                     merged_df['Adjusted Projection'] = merged_df['Projection'] * merged_df['Bias']
-                    merged_df['Optimization Score'] = merged_df['Boost'] * merged_df['Adjusted Projection']
+                    
+                    # --- FIXED SCORING LOGIC ---
+                    # Calculate "Max Potential Score" (Assuming Slot 1 / 2.0x Slot Bonus)
+                    # This ensures players with 0 Boost still have a high value if their projection is good.
+                    merged_df['Optimization Score'] = (merged_df['Boost'] + 2.0) * merged_df['Adjusted Projection']
+                    
+                    # Est. Score for display (showing Base + Boost value roughly)
                     merged_df['Est. Score'] = merged_df['Boost'] * merged_df['Projection']
 
                     tab1, tab2, tab3 = st.tabs(["📊 Data Browser", "💎 Best Value", "🚀 Lineup Optimizer"])
                     
                     with tab1:
                         st.markdown("### Player Pool (Raw Data)")
-                        cols = ['Sport', 'Slate', 'Game', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Est. Score']
+                        cols = ['Sport', 'Slate', 'Game', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Optimization Score']
                         cols = [c for c in cols if c in merged_df.columns]
-                        st.dataframe(merged_df[cols].sort_values('Est. Score', ascending=False), use_container_width=True)
+                        # Sorted by Optimization Score so 0-boost/High-Proj players appear at top
+                        st.dataframe(merged_df[cols].sort_values('Optimization Score', ascending=False), use_container_width=True)
                         csv_data = merged_df[cols].to_csv(index=False)
                         st.download_button("Download Data CSV", csv_data, "player_pool.csv", "text/csv")
 
@@ -568,5 +590,3 @@ if not st.session_state.boost_data.empty:
         st.info("Waiting for Projections (Upload, Paste, or Configure Global URL).")
 else:
     st.write("Waiting for data fetch...")
-
-
