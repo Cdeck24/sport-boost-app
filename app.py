@@ -6,8 +6,13 @@ import pandas as pd
 import concurrent.futures
 import pulp
 import io
+import unicodedata
 
-# --- ⬇️ PASTE YOUR LINKS HERE (CSV or Webpages) ⬇️ ---
+# --- ⬇️ CONFIGURATION LINKS ⬇️ ---
+# 1. LIVE BOOSTS CSV (Your Google Sheet with saved multipliers)
+SAVED_BOOSTS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1721203281&single=true&output=csv"
+
+# 2. PROJECTION SOURCES (Updated Google Sheet Links)
 SPORT_PROJECTION_URLS = {
     "nba": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=0&single=true&output=csv", 
     "nfl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1180552482&single=true&output=csv",
@@ -32,13 +37,29 @@ def get_fantasy_day():
     return us_time.date()
 
 def normalize_name(name):
-    """Robust normalization for names."""
-    n = str(name).lower()
+    """
+    Robust normalization for names with accent removal.
+    Converts 'Dončić' -> 'doncic', 'O'Neale' -> 'oneale'.
+    """
+    if not isinstance(name, str):
+        name = str(name)
+        
+    n = name.lower().strip()
+    
+    # Normalize unicode characters (Decompose accents: ć -> c + ´)
+    try:
+        n = unicodedata.normalize('NFKD', n).encode('ascii', 'ignore').decode('utf-8')
+    except Exception:
+        pass
+    
+    # Remove specific suffixes that might cause mismatches
     suffixes = [' jr', ' sr', ' ii', ' iii', ' iv', ' v', ' jr.', ' sr.']
     for suffix in suffixes:
         if n.endswith(suffix):
             n = n[:-len(suffix)]
             break
+            
+    # Remove any remaining non-alphanumeric chars (spaces, hyphens, periods, apostrophes)
     return "".join(c for c in n if c.isalnum())
 
 def normalize_position(pos):
@@ -59,6 +80,46 @@ def find_col(columns, keywords):
         if any(str(k).lower() in col_lower for k in keywords):
             return col
     return None
+
+def standardize_boost_columns(df):
+    """Ensures the DataFrame has the standard column names used by the app."""
+    # Create a mapping of possible variations to standard names
+    col_map = {}
+    
+    # Player Name
+    name_col = find_col(df.columns, ["player name", "player", "name"])
+    if name_col: col_map[name_col] = "Player Name"
+    
+    # Boost
+    boost_col = find_col(df.columns, ["boost value", "boost", "multiplier"])
+    if boost_col: col_map[boost_col] = "Boost"
+    
+    # Sport
+    sport_col = find_col(df.columns, ["sport", "league"])
+    if sport_col: col_map[sport_col] = "Sport"
+    
+    # Position
+    pos_col = find_col(df.columns, ["position", "pos"])
+    if pos_col: col_map[pos_col] = "Position"
+    
+    # Date
+    date_col = find_col(df.columns, ["date", "day"])
+    if date_col: col_map[date_col] = "Date"
+    
+    # Injury
+    inj_col = find_col(df.columns, ["injury", "status"])
+    if inj_col: col_map[inj_col] = "Injury"
+
+    # Rename and return
+    df = df.rename(columns=col_map)
+    
+    # Ensure required columns exist even if empty
+    required_cols = ["Player Name", "Boost", "Sport", "Position", "Date", "Injury"]
+    for c in required_cols:
+        if c not in df.columns:
+            df[c] = None
+            
+    return df
 
 def calculate_nba_custom_rating(row, mapping):
     """Calculates player rating based on the user-provided efficiency formula."""
@@ -96,99 +157,80 @@ def calculate_nba_custom_rating(row, mapping):
 
     return round(rating, 2)
 
-def fetch_data_for_sport(sport):
-    """Fetches player data from API."""
-    letters = string.ascii_uppercase
+def fetch_letter(session, sport, date_str, letter):
+    """Helper to fetch a single letter for a specific date."""
+    url = (
+        f"https://api.real.vg/players/sport/{sport}/search"
+        f"?day={date_str}&includeNoOneOption=false"
+        f"&query={letter}&searchType=ratingLineup"
+    )
+    try:
+        r = session.get(url, timeout=5)
+        if r.status_code == 200:
+            return r.json().get("players", [])
+    except:
+        pass
+    return []
+
+def fetch_data_for_sport(sport, target_date):
+    """Fetches player data from API using STRICTLY the selected date."""
     session = requests.Session()
     sport_data = []
-    seen_players = set() 
-
-    current_us_date = get_fantasy_day()
-    target_dates = [current_us_date]
-    if sport.lower() == 'nfl':
-        target_dates = [current_us_date + datetime.timedelta(days=i) for i in range(7)]
-
-    active_date_str = str(current_us_date)
     
-    if len(target_dates) > 1:
-        found_date = False
-        for d in target_dates:
-            d_str = str(d)
-            probe_url = (
-                f"https://api.real.vg/players/sport/{sport}/search"
-                f"?day={d_str}&includeNoOneOption=false"
-                f"&query=S&searchType=ratingLineup"
-            )
-            try:
-                r = session.get(probe_url, timeout=3)
-                if r.status_code == 200:
-                    data = r.json()
-                    if data.get("players"):
-                        active_date_str = d_str
-                        found_date = True
-                        break
-            except:
-                pass
+    # Strict Date Strategy: Only check the specific date requested
+    active_date_str = str(target_date)
+
+    # Parallel Fetch Alphabet + Accented Characters
+    # Extended charset to catch names like "Šarić" if indexed under "Š"
+    letters = list(string.ascii_uppercase) + ['Š', 'Ć', 'Č', 'Ž', 'Đ', 'Ö', 'Ä', 'Ü', 'Å', 'Ø']
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_req = {executor.submit(fetch_letter, session, sport, active_date_str, letter): letter for letter in letters}
         
-        if not found_date:
-            active_date_str = str(current_us_date)
+        for future in concurrent.futures.as_completed(future_to_req):
+            try:
+                players = future.result()
+                if not players: continue
 
-    for letter in letters:
-        query = letter
-        url = (
-            f"https://api.real.vg/players/sport/{sport}/search"
-            f"?day={active_date_str}&includeNoOneOption=false"
-            f"&query={query}&searchType=ratingLineup"
-        )
-        try:
-            r = session.get(url, timeout=5)
-            if r.status_code != 200: continue
-            data = r.json()
-            players = data.get("players", [])
-            if not players: continue
+                for player in players:
+                    raw_injury = player.get('injuryStatus')
+                    injury_status = str(raw_injury).strip().upper() if raw_injury else ""
+                    
+                    # Check for O/OUT
+                    if injury_status in ['O', 'OUT', 'IR', 'INJ']: 
+                        continue
 
-            for player in players:
-                raw_injury = player.get('injuryStatus')
-                injury_status = str(raw_injury).strip().upper() if raw_injury else ""
-                
-                # Check for O/OUT
-                if injury_status in ['O', 'OUT', 'IR', 'INJ']: 
-                    continue
+                    position = player.get('position', 'Unknown')
+                    if sport.lower() == 'nhl' and position == 'G':
+                        continue
 
-                position = player.get('position', 'Unknown')
-                if sport.lower() == 'nhl' and position == 'G':
-                    continue
+                    full_name = f"{player['firstName']} {player['lastName']}"
+                    
+                    # Note: We don't filter duplicates here. We let the downstream merge logic handle it.
 
-                full_name = f"{player['firstName']} {player['lastName']}"
-                
-                if full_name in seen_players:
-                    continue
-                seen_players.add(full_name)
-
-                # --- DEFAULT BOOST TO 0.0 ---
-                boost_value = 0.0 
-                details = player.get("details")
-                
-                # Try to extract boost if it exists
-                if details and isinstance(details, list) and len(details) > 0 and "text" in details[0]:
-                    text = details[0]["text"]
-                    boost_str = text.replace("x", "").replace("+", "").strip()
-                    try:
-                        boost_value = float(boost_str) 
-                    except ValueError:
-                        pass 
-                
-                # Append player regardless of whether they had a boost found or not
-                sport_data.append({
-                    "Sport": sport.upper(),
-                    "Player Name": full_name,
-                    "Position": position,
-                    "Boost": boost_value,
-                    "Date": active_date_str,
-                    "Injury": injury_status
-                })
-        except requests.RequestException:
-            continue
+                    # --- DEFAULT BOOST TO 0.0 ---
+                    boost_value = 0.0 
+                    details = player.get("details")
+                    
+                    # Try to extract boost if it exists
+                    if details and isinstance(details, list) and len(details) > 0 and "text" in details[0]:
+                        text = details[0]["text"]
+                        boost_str = text.replace("x", "").replace("+", "").strip()
+                        try:
+                            boost_value = float(boost_str) 
+                        except ValueError:
+                            pass 
+                    
+                    sport_data.append({
+                        "Sport": sport.upper(),
+                        "Player Name": full_name,
+                        "Position": position,
+                        "Boost": boost_value,
+                        "Date": active_date_str,
+                        "Injury": injury_status
+                    })
+            except:
+                continue
             
     return sport_data
 
@@ -297,9 +339,24 @@ def run_optimization(df, num_lineups=1):
 
 # --- Sidebar: Configuration ---
 with st.sidebar:
-    st.header("1. Fetch Boosts")
+    st.header("1. Boost Data")
     selected_sport = st.selectbox("Select League", ["nba", "nhl", "nfl"], index=0)
-    fetch_btn = st.button("Fetch Live Boosts")
+    
+    # NEW: Date Picker for explicit control
+    target_date = st.date_input("Game Date", get_fantasy_day())
+    
+    fetch_btn = st.button("Fetch Live Boosts (Update Injuries)")
+
+    # Allow downloading boosts whenever data is present
+    if 'boost_data' in st.session_state and not st.session_state.boost_data.empty:
+        csv_buffer = st.session_state.boost_data.to_csv(index=False).encode('utf-8')
+        # Use target_date in filename to prevent date mismatches
+        st.download_button(
+            label="💾 Save Current Boosts",
+            data=csv_buffer,
+            file_name=f"boosts_backup_{target_date}.csv",
+            mime="text/csv"
+        )
 
     st.header("2. Projections Source")
     input_options = ["Upload CSV", "Paste Text"]
@@ -324,9 +381,19 @@ with st.sidebar:
     elif input_method == "Upload CSV":
         st.info("Upload CSV with Name, Points (e.g. 'FPTS', 'Proj'), and Position.")
         uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
-    else:
+        if uploaded_file:
+            st.session_state.proj_df = pd.read_csv(uploaded_file)
+            
+    elif input_method == "Paste Text":
         st.info("Copy table from website and paste here.")
         pasted_text = st.text_area("Paste Data Here", height=150, placeholder="Player Name   FPTS   Position...")
+        if pasted_text:
+            try:
+                st.session_state.proj_df = pd.read_csv(io.StringIO(pasted_text), sep="\t")
+                if len(st.session_state.proj_df.columns) < 2:
+                    st.session_state.proj_df = pd.read_csv(io.StringIO(pasted_text), sep=",")
+            except:
+                st.error("Could not parse pasted text.")
 
     st.header("3. Optimization Settings")
     wr_rb_bonus = 1.0
@@ -334,16 +401,39 @@ with st.sidebar:
     num_lineups = st.slider("Number of Lineups", 1, 10, 3)
 
 # --- Main Logic ---
-if 'boost_data' not in st.session_state:
-    st.session_state.boost_data = pd.DataFrame()
 
+# 1. Initialize Boost Data (Auto-Load from Google Sheet)
+if 'boost_data' not in st.session_state:
+    try:
+        # Load from the Google Sheet URL provided by user
+        saved_df = pd.read_csv(SAVED_BOOSTS_URL)
+        # STANDARD-IZE COLUMNS (Fix "Boost Value" -> "Boost")
+        saved_df = standardize_boost_columns(saved_df)
+        st.session_state.boost_data = saved_df
+        
+        # Check Date Consistency
+        if 'Date' in saved_df.columns:
+            loaded_dates = saved_df['Date'].astype(str).unique()
+            if len(loaded_dates) > 0:
+                most_common = loaded_dates[0]
+                if str(most_common) != str(target_date):
+                    st.toast(f"⚠️ Loaded boosts are from {most_common}. Selected Date: {target_date}", icon="📅")
+    except Exception as e:
+        st.session_state.boost_data = pd.DataFrame(columns=['Sport', 'Player Name', 'Position', 'Boost', 'Date', 'Injury'])
+        st.error(f"Could not load Saved Boosts from Google Sheet: {e}")
+
+if 'proj_df' not in st.session_state:
+    st.session_state.proj_df = None
+
+# 2. Fetch Live Logic (Merges into Saved Data)
 if fetch_btn:
     all_results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
     try:
         status_text.text(f"Fetching {selected_sport.upper()}...")
-        data = fetch_data_for_sport(selected_sport)
+        # Now passing target_date to the fetch function
+        data = fetch_data_for_sport(selected_sport, target_date)
         all_results.extend(data)
     except Exception as e:
         st.error(f"Error fetching data: {e}")
@@ -352,43 +442,100 @@ if fetch_btn:
     progress_bar.empty()
     
     if all_results:
-        st.session_state.boost_data = pd.DataFrame(all_results)
-        found_dates = sorted(list(set(r['Date'] for r in all_results if 'Date' in r)))
-        date_msg = f" (Date: {found_dates[0]})" if len(found_dates) == 1 else ""
-        st.success(f"Fetched {len(st.session_state.boost_data)} players{date_msg}.")
+        # Map of API results: Name -> Row
+        api_data_map = {row['Player Name']: row for row in all_results}
+        
+        # Get current state (Saved CSV)
+        current_df = st.session_state.boost_data.copy()
+        current_df = standardize_boost_columns(current_df) # Ensure clean cols
+        
+        # We need to construct a new list of rows
+        updated_rows = []
+        
+        # Track which names we have processed
+        processed_names = set()
+        
+        # 1. Update Existing Players in Saved CSV
+        for _, row in current_df.iterrows():
+            if str(row.get('Sport', '')).upper() == selected_sport.upper():
+                name = row['Player Name']
+                processed_names.add(name)
+                
+                # Start with saved data (Trusted Boost)
+                new_row = row.to_dict()
+                
+                # --- FIX: Force Update Date to the selected target date for ALL players in this sport ---
+                # This ensures the downloaded CSV reflects the current slate, not when the data was originally found.
+                new_row['Date'] = str(target_date)
+                
+                # If API has this player, update INJURY status (Trusted Status)
+                if name in api_data_map:
+                    api_row = api_data_map[name]
+                    new_row['Injury'] = api_row.get('Injury', '')
+                    
+                    # Update boost ONLY if API has a better/new boost > 0.0
+                    api_boost = api_row.get('Boost', 0.0)
+                    old_boost = row.get('Boost', 0.0)
+                    
+                    # Preserve old boost if API returns 0.0
+                    if api_boost > 0.0 and api_boost != old_boost:
+                         new_row['Boost'] = api_boost
+                
+                updated_rows.append(new_row)
+            else:
+                updated_rows.append(row.to_dict())
+                
+        # 2. Add New Players found in API but not in CSV
+        for name, row in api_data_map.items():
+            if name not in processed_names:
+                updated_rows.append(row)
+                
+        st.session_state.boost_data = pd.DataFrame(updated_rows)
+        st.success(f"Updated Data & Injuries for {selected_sport.upper()}!")
     else:
-        st.warning(f"No boosts found for {selected_sport.upper()}. (For NFL, we checked next 7 days).")
-        # Initialize empty DF to allow CSV-only workflow if API returns nothing
-        st.session_state.boost_data = pd.DataFrame(columns=['Sport', 'Player Name', 'Position', 'Boost', 'Date', 'Injury'])
+        st.warning(f"No active data found in API for {selected_sport.upper()}. Using Saved Boosts.")
 
 # Check proceed condition
 proceed = False
 if not st.session_state.boost_data.empty:
     proceed = True
-elif fetch_btn: 
+if st.session_state.proj_df is not None:
     proceed = True
 
 if proceed:
     df_boosts = st.session_state.boost_data
-    df_proj = None
+    df_boosts = standardize_boost_columns(df_boosts) # Ensure columns match before merge
+    
+    df_proj = st.session_state.proj_df
+    
+    df_proj_copy = None
     error_msg = None
     source_type = None
     
     if input_method == "Use Global/Public Projections" and current_proj_url:
-        df_proj, source_type = load_projections_from_url(current_proj_url)
-        if df_proj is None:
-            error_msg = source_type
+        if st.session_state.proj_df is None:
+             df_proj_copy, source_type = load_projections_from_url(current_proj_url)
+             if df_proj_copy is not None:
+                 st.session_state.proj_df = df_proj_copy
+             else:
+                 error_msg = source_type
+        else:
+             df_proj_copy = st.session_state.proj_df
+             
     elif uploaded_file:
-        try: df_proj = pd.read_csv(uploaded_file)
+        try: df_proj_copy = pd.read_csv(uploaded_file)
         except Exception as e: error_msg = f"Error reading file: {e}"
     elif pasted_text:
         try:
-            df_proj = pd.read_csv(io.StringIO(pasted_text), sep="\t")
-            if len(df_proj.columns) < 2: df_proj = pd.read_csv(io.StringIO(pasted_text), sep=",")
+            df_proj_copy = pd.read_csv(io.StringIO(pasted_text), sep="\t")
+            if len(df_proj_copy.columns) < 2: df_proj_copy = pd.read_csv(io.StringIO(pasted_text), sep=",")
         except Exception as e: error_msg = f"Error reading text: {e}"
+    elif st.session_state.proj_df is not None:
+        df_proj_copy = st.session_state.proj_df
 
-    if df_proj is not None:
+    if df_proj_copy is not None:
         try:
+            df_proj = df_proj_copy.copy() 
             if isinstance(df_proj.columns, pd.MultiIndex):
                 df_proj.columns = [' '.join(col).strip() for col in df_proj.columns.values]
             
@@ -479,7 +626,7 @@ if proceed:
                 merged_df['Injury'] = merged_df['Injury'].fillna('')
                 merged_df['Sport'] = merged_df['Sport'].fillna(selected_sport.upper())
 
-                # Post-merge injury check
+                # Post-merge injury check (This uses the updated 'Injury' column from the API/Merge logic)
                 merged_df = merged_df[~merged_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])]
 
                 if merged_df.empty:
