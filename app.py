@@ -316,21 +316,51 @@ with st.sidebar:
     pasted_text = None
     current_proj_url = None
     
+    # Initialize session state for Projections if not present
+    if 'proj_df' not in st.session_state:
+        st.session_state.proj_df = None
+    
+    # --- Projection Logic with Persistence ---
     if input_method == "Use Global/Public Projections":
         sport_key = selected_sport.lower()
         url = SPORT_PROJECTION_URLS.get(sport_key)
         if url:
             st.success(f"✅ URL Configured for {sport_key.upper()}")
             st.caption(f"Source: {url[:40]}...")
-            current_proj_url = url
+            
+            # Button to explicitly refresh/load projections
+            if st.button(f"Load/Refresh {sport_key.upper()} Projections"):
+                with st.spinner(f"Fetching {sport_key.upper()} projections..."):
+                    df, err = load_projections_from_url(url)
+                    if df is not None:
+                        st.session_state.proj_df = df
+                        st.success("Projections Loaded!")
+                    else:
+                        st.error(f"Failed to load: {err}")
+            
+            # If nothing loaded yet, try auto-load on first run
+            if st.session_state.proj_df is None:
+                st.info("Click button above to load projections.")
+                
         else:
             st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
+            
     elif input_method == "Upload CSV":
         st.info("Upload CSV with Name, Points (e.g. 'FPTS', 'Proj'), and Position.")
         uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
-    else:
+        if uploaded_file:
+            st.session_state.proj_df = pd.read_csv(uploaded_file)
+            
+    elif input_method == "Paste Text":
         st.info("Copy table from website and paste here.")
         pasted_text = st.text_area("Paste Data Here", height=150, placeholder="Player Name   FPTS   Position...")
+        if pasted_text:
+            try:
+                st.session_state.proj_df = pd.read_csv(io.StringIO(pasted_text), sep="\t")
+                if len(st.session_state.proj_df.columns) < 2:
+                    st.session_state.proj_df = pd.read_csv(io.StringIO(pasted_text), sep=",")
+            except:
+                st.error("Could not parse pasted text.")
 
     st.header("3. Optimization Settings")
     wr_rb_bonus = 1.0
@@ -365,32 +395,18 @@ if fetch_btn:
         # Initialize empty DF to allow CSV-only workflow if API returns nothing
         st.session_state.boost_data = pd.DataFrame(columns=['Sport', 'Player Name', 'Position', 'Boost', 'Date', 'Injury'])
 
-# Check proceed condition
+# Check proceed condition: We need EITHER boost data OR projection data
 proceed = False
 if not st.session_state.boost_data.empty:
     proceed = True
-elif fetch_btn: 
+if st.session_state.proj_df is not None:
     proceed = True
 
 if proceed:
     df_boosts = st.session_state.boost_data
-    df_proj = None
-    error_msg = None
-    source_type = None
+    # Use the Session State Projections (Snapshot)
+    df_proj = st.session_state.proj_df
     
-    if input_method == "Use Global/Public Projections" and current_proj_url:
-        df_proj, source_type = load_projections_from_url(current_proj_url)
-        if df_proj is None:
-            error_msg = source_type
-    elif uploaded_file:
-        try: df_proj = pd.read_csv(uploaded_file)
-        except Exception as e: error_msg = f"Error reading file: {e}"
-    elif pasted_text:
-        try:
-            df_proj = pd.read_csv(io.StringIO(pasted_text), sep="\t")
-            if len(df_proj.columns) < 2: df_proj = pd.read_csv(io.StringIO(pasted_text), sep=",")
-        except Exception as e: error_msg = f"Error reading text: {e}"
-
     if df_proj is not None:
         try:
             if isinstance(df_proj.columns, pd.MultiIndex):
