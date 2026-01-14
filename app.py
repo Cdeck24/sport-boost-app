@@ -230,7 +230,6 @@ def run_optimization(df, num_lineups=1):
         return None
 
     # Sort by Optimization Score (Boost + 2.0 * Projection)
-    # This prioritizes players even if their boost is 0.0, as long as projection is high
     df = df.sort_values('Optimization Score', ascending=False)
     df = df.drop_duplicates(subset=['Player Name'], keep='first').reset_index(drop=True)
     
@@ -251,7 +250,6 @@ def run_optimization(df, num_lineups=1):
             adj_proj = df.loc[i, 'Adjusted Projection'] 
             slot_add = SLOT_ADDERS[j]
             # Points = (Boost + SlotMultiplier) * Projection
-            # If Boost is 0.0, it becomes (0.0 + SlotMultiplier) * Projection
             points = (raw_boost + slot_add) * adj_proj
             obj_terms.append(points * x[i][j])
             
@@ -327,20 +325,28 @@ with st.sidebar:
         if url:
             st.success(f"✅ URL Configured for {sport_key.upper()}")
             st.caption(f"Source: {url[:40]}...")
+            current_proj_url = url
             
-            # Button to explicitly refresh/load projections
-            if st.button(f"Load/Refresh {sport_key.upper()} Projections"):
-                with st.spinner(f"Fetching {sport_key.upper()} projections..."):
+            # 1. AUTO-LOAD if missing
+            if st.session_state.proj_df is None:
+                with st.spinner(f"Auto-loading {sport_key.upper()} projections..."):
                     df, err = load_projections_from_url(url)
                     if df is not None:
                         st.session_state.proj_df = df
-                        st.success("Projections Loaded!")
+                        st.rerun() # Refresh to update main area immediately
                     else:
-                        st.error(f"Failed to load: {err}")
+                        st.error(f"Auto-load failed: {err}")
             
-            # If nothing loaded yet, try auto-load on first run
-            if st.session_state.proj_df is None:
-                st.info("Click button above to load projections.")
+            # 2. Manual Refresh Button
+            if st.button(f"Refresh {sport_key.upper()} Projections"):
+                with st.spinner(f"Refreshing {sport_key.upper()} projections..."):
+                    df, err = load_projections_from_url(url)
+                    if df is not None:
+                        st.session_state.proj_df = df
+                        st.success("Projections Refreshed!")
+                        st.rerun()
+                    else:
+                        st.error(f"Failed to refresh: {err}")
                 
         else:
             st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
@@ -389,39 +395,24 @@ if fetch_btn:
         new_df = pd.DataFrame(all_results)
         
         # --- PERSISTENCE LOGIC (Smart Merge) ---
-        # If we have existing data, ensure we don't overwrite valid boosts with 0.0/missing
         if not st.session_state.boost_data.empty:
-            # 1. Separate current sport data from other sports in memory
-            # We only want to update the current sport, keeping others safe
             other_sports_df = st.session_state.boost_data[st.session_state.boost_data['Sport'] != selected_sport.upper()]
             old_sport_df = st.session_state.boost_data[st.session_state.boost_data['Sport'] == selected_sport.upper()]
             
-            # Map of old data: Player Name -> Row Dict
             old_data_map = {row['Player Name']: row.to_dict() for _, row in old_sport_df.iterrows()}
-            
-            # Map of new data: Player Name -> Row Dict
             final_data_map = {row['Player Name']: row for row in all_results}
             
-            # 2. Iterate old data to preserve boosts
             for name, old_row in old_data_map.items():
                 old_boost = old_row.get('Boost', 0.0)
-                
                 if old_boost > 0.0:
-                    # Case A: Player disappeared from API (Game Started?), keep old record
                     if name not in final_data_map:
                         final_data_map[name] = old_row
-                    # Case B: Player exists in API but lost boost (returned 0.0), restore old boost
                     elif final_data_map[name]['Boost'] == 0.0:
                         final_data_map[name]['Boost'] = old_boost
                         
-            # Reconstruct DF for current sport
             merged_sport_df = pd.DataFrame(list(final_data_map.values()))
-            
-            # Combine back with other sports
             st.session_state.boost_data = pd.concat([other_sports_df, merged_sport_df], ignore_index=True)
-            
         else:
-            # First fetch, just save it
             st.session_state.boost_data = new_df
 
         found_dates = sorted(list(set(r['Date'] for r in all_results if 'Date' in r)))
@@ -429,7 +420,6 @@ if fetch_btn:
         st.success(f"Fetched {len(st.session_state.boost_data)} players{date_msg}.")
     else:
         st.warning(f"No boosts found for {selected_sport.upper()}. (For NFL, we checked next 7 days).")
-        # Initialize empty DF to allow CSV-only workflow if API returns nothing
         if st.session_state.boost_data.empty:
             st.session_state.boost_data = pd.DataFrame(columns=['Sport', 'Player Name', 'Position', 'Boost', 'Date', 'Injury'])
 
@@ -442,23 +432,8 @@ if st.session_state.proj_df is not None:
 
 if proceed:
     df_boosts = st.session_state.boost_data
-    df_proj = None
-    error_msg = None
-    source_type = None
+    df_proj = st.session_state.proj_df
     
-    if input_method == "Use Global/Public Projections" and current_proj_url:
-        df_proj, source_type = load_projections_from_url(current_proj_url)
-        if df_proj is None:
-            error_msg = source_type
-    elif uploaded_file:
-        try: df_proj = pd.read_csv(uploaded_file)
-        except Exception as e: error_msg = f"Error reading file: {e}"
-    elif pasted_text:
-        try:
-            df_proj = pd.read_csv(io.StringIO(pasted_text), sep="\t")
-            if len(df_proj.columns) < 2: df_proj = pd.read_csv(io.StringIO(pasted_text), sep=",")
-        except Exception as e: error_msg = f"Error reading text: {e}"
-
     if df_proj is not None:
         try:
             if isinstance(df_proj.columns, pd.MultiIndex):
@@ -466,7 +441,6 @@ if proceed:
             
             df_proj.columns = [str(c).strip() for c in df_proj.columns]
             
-            # --- Column Detection ---
             first_name_col = find_col(df_proj.columns, ["first name", "firstname", "first"])
             last_name_col = find_col(df_proj.columns, ["last name", "lastname", "last"])
             
@@ -513,7 +487,6 @@ if proceed:
             team_col = find_col(df_proj.columns, ["team", "tm", "squad"])
             opp_col = find_col(df_proj.columns, ["opp", "opponent", "vs"])
             
-            # --- FIXED INJURY FILTERING (CSV Source) ---
             injury_csv_col = find_col(df_proj.columns, ["injury", "status"])
             if injury_csv_col:
                 df_proj = df_proj[~df_proj[injury_csv_col].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])]
@@ -540,10 +513,8 @@ if proceed:
                 df_boosts['join_key'] = df_boosts['Player Name'].apply(normalize_name)
                 df_proj['join_key'] = df_proj[name_col].apply(normalize_name)
                 
-                # Right Join: Use CSV as master list to ensure all projections are present
                 merged_df = pd.merge(df_boosts, df_proj, on='join_key', how='right')
                 
-                # Fill NAs
                 merged_df['Boost'] = merged_df['Boost'].fillna(0.0)
                 merged_df['Player Name'] = merged_df['Player Name'].fillna(merged_df[name_col])
                 if pos_col:
@@ -551,7 +522,6 @@ if proceed:
                 merged_df['Injury'] = merged_df['Injury'].fillna('')
                 merged_df['Sport'] = merged_df['Sport'].fillna(selected_sport.upper())
 
-                # Post-merge injury check
                 merged_df = merged_df[~merged_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])]
 
                 if merged_df.empty:
@@ -586,13 +556,7 @@ if proceed:
 
                     merged_df['Bias'] = merged_df.apply(get_bias_multiplier, axis=1)
                     merged_df['Adjusted Projection'] = merged_df['Projection'] * merged_df['Bias']
-                    
-                    # Score Calculation Logic:
-                    # If Boost is 0.0, we assume the player adds the BASE slot value (e.g. +2.0x, +1.8x).
-                    # Optimization Score = (Boost + 2.0) * Projection
                     merged_df['Optimization Score'] = (merged_df['Boost'] + 2.0) * merged_df['Adjusted Projection']
-                    
-                    # Estimated Score = Boost * Projection (Raw score from boost alone)
                     merged_df['Est. Score'] = merged_df['Boost'] * merged_df['Projection']
 
                     tab1, tab2, tab3 = st.tabs(["📊 Data Browser", "💎 Best Value", "🚀 Lineup Optimizer"])
@@ -601,7 +565,6 @@ if proceed:
                         st.markdown("### Player Pool (Raw Data)")
                         cols = ['Sport', 'Slate', 'Game', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Optimization Score']
                         cols = [c for c in cols if c in merged_df.columns]
-                        # Sort by Optimization Score so 0-boost players appear correctly based on their projection value
                         st.dataframe(merged_df[cols].sort_values('Optimization Score', ascending=False), use_container_width=True)
                         csv_data = merged_df[cols].to_csv(index=False)
                         st.download_button("Download Data CSV", csv_data, "player_pool.csv", "text/csv")
