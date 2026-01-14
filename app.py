@@ -120,49 +120,20 @@ def fetch_letter(session, sport, date_str, letter):
     return []
 
 def fetch_data_for_sport(sport, target_date):
-    """Fetches player data from API using the selected date + lookahead."""
+    """Fetches player data from API using STRICTLY the selected date."""
     session = requests.Session()
     sport_data = []
     
-    # Determine Date Strategy
-    # Fetch selected date AND next day (or next 7 for NFL) to account for timezone/server rollovers
-    if sport.lower() == 'nfl':
-        target_dates = [target_date + datetime.timedelta(days=i) for i in range(7)]
-    else:
-        target_dates = [target_date, target_date + datetime.timedelta(days=1)]
+    # Strict Date Strategy: Only check the specific date requested
+    active_date_str = str(target_date)
 
-    # 1. Probe Dates (Find which days actually have data to avoid wasting requests)
-    valid_dates = []
-    for d in target_dates:
-        d_str = str(d)
-        # Probe with "a" to check existence
-        probe_url = (
-            f"https://api.real.vg/players/sport/{sport}/search"
-            f"?day={d_str}&includeNoOneOption=false"
-            f"&query=a&searchType=ratingLineup"
-        )
-        try:
-            r = session.get(probe_url, timeout=3)
-            if r.status_code == 200 and r.json().get("players"):
-                valid_dates.append(d_str)
-        except:
-            pass
-            
-    # If no dates found via probe, fallback to target_date
-    if not valid_dates:
-        valid_dates = [str(target_date)]
-
-    # 2. Parallel Fetch Alphabet for Valid Dates
+    # Parallel Fetch Alphabet for the single date
     letters = string.ascii_uppercase
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_req = {}
-        for d_str in valid_dates:
-            for letter in letters:
-                future_to_req[executor.submit(fetch_letter, session, sport, d_str, letter)] = d_str
+        future_to_req = {executor.submit(fetch_letter, session, sport, active_date_str, letter): letter for letter in letters}
         
         for future in concurrent.futures.as_completed(future_to_req):
-            active_date_str = future_to_req[future]
             try:
                 players = future.result()
                 if not players: continue
@@ -181,8 +152,7 @@ def fetch_data_for_sport(sport, target_date):
 
                     full_name = f"{player['firstName']} {player['lastName']}"
                     
-                    # Note: We don't filter duplicates here. We let the downstream merge logic
-                    # (which uses a dictionary keyed by name) overwrite older entries with newer ones.
+                    # Note: We don't filter duplicates here. We let the downstream merge logic handle it.
 
                     # --- DEFAULT BOOST TO 0.0 ---
                     boost_value = 0.0 
@@ -460,7 +430,6 @@ if fetch_btn:
         
         # 1. Update Existing Players in Saved CSV
         for _, row in current_df.iterrows():
-            # Check sport match
             if str(row.get('Sport', '')).upper() == selected_sport.upper():
                 name = row['Player Name']
                 processed_names.add(name)
@@ -469,7 +438,6 @@ if fetch_btn:
                 new_row = row.to_dict()
                 
                 # If API has this player, update INJURY status (Trusted Status)
-                # But keep the boost from the CSV if API boost is 0.0 (likely game started)
                 if name in api_data_map:
                     api_row = api_data_map[name]
                     new_row['Injury'] = api_row.get('Injury', '')
@@ -482,7 +450,6 @@ if fetch_btn:
                 
                 updated_rows.append(new_row)
             else:
-                # Keep other sports as is
                 updated_rows.append(row.to_dict())
                 
         # 2. Add New Players found in API but not in CSV
@@ -610,7 +577,6 @@ if proceed:
                 df_boosts['join_key'] = df_boosts['Player Name'].apply(normalize_name)
                 df_proj['join_key'] = df_proj[name_col].apply(normalize_name)
                 
-                # Right Join: Use CSV as master list to ensure all projections are present
                 merged_df = pd.merge(df_boosts, df_proj, on='join_key', how='right')
                 
                 merged_df['Boost'] = merged_df['Boost'].fillna(0.0)
