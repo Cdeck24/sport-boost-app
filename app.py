@@ -40,7 +40,10 @@ def normalize_name(name):
     """Robust normalization for names with accent removal."""
     n = str(name).lower()
     # Normalize unicode characters (e.g. Doncic vs Dončić)
-    n = unicodedata.normalize('NFKD', n).encode('ascii', 'ignore').decode('utf-8')
+    try:
+        n = unicodedata.normalize('NFKD', n).encode('ascii', 'ignore').decode('utf-8')
+    except:
+        pass
     
     suffixes = [' jr', ' sr', ' ii', ' iii', ' iv', ' v', ' jr.', ' sr.']
     for suffix in suffixes:
@@ -67,6 +70,46 @@ def find_col(columns, keywords):
         if any(str(k).lower() in col_lower for k in keywords):
             return col
     return None
+
+def standardize_boost_columns(df):
+    """Ensures the DataFrame has the standard column names used by the app."""
+    # Create a mapping of possible variations to standard names
+    col_map = {}
+    
+    # Player Name
+    name_col = find_col(df.columns, ["player name", "player", "name"])
+    if name_col: col_map[name_col] = "Player Name"
+    
+    # Boost
+    boost_col = find_col(df.columns, ["boost value", "boost", "multiplier"])
+    if boost_col: col_map[boost_col] = "Boost"
+    
+    # Sport
+    sport_col = find_col(df.columns, ["sport", "league"])
+    if sport_col: col_map[sport_col] = "Sport"
+    
+    # Position
+    pos_col = find_col(df.columns, ["position", "pos"])
+    if pos_col: col_map[pos_col] = "Position"
+    
+    # Date
+    date_col = find_col(df.columns, ["date", "day"])
+    if date_col: col_map[date_col] = "Date"
+    
+    # Injury
+    inj_col = find_col(df.columns, ["injury", "status"])
+    if inj_col: col_map[inj_col] = "Injury"
+
+    # Rename and return
+    df = df.rename(columns=col_map)
+    
+    # Ensure required columns exist even if empty
+    required_cols = ["Player Name", "Boost", "Sport", "Position", "Date", "Injury"]
+    for c in required_cols:
+        if c not in df.columns:
+            df[c] = None
+            
+    return df
 
 def calculate_nba_custom_rating(row, mapping):
     """Calculates player rating based on the user-provided efficiency formula."""
@@ -381,15 +424,15 @@ if 'boost_data' not in st.session_state:
     try:
         # Load from the Google Sheet URL provided by user
         saved_df = pd.read_csv(SAVED_BOOSTS_URL)
+        # STANDARD-IZE COLUMNS (Fix "Boost Value" -> "Boost")
+        saved_df = standardize_boost_columns(saved_df)
         st.session_state.boost_data = saved_df
         
         # Check Date Consistency
         if 'Date' in saved_df.columns:
-            # Try to grab the most common date
             loaded_dates = saved_df['Date'].astype(str).unique()
             if len(loaded_dates) > 0:
                 most_common = loaded_dates[0]
-                # Simple check: warn if loaded date doesn't match selected target date
                 if str(most_common) != str(target_date):
                     st.toast(f"⚠️ Loaded boosts are from {most_common}. Selected Date: {target_date}", icon="📅")
     except Exception as e:
@@ -421,6 +464,7 @@ if fetch_btn:
         
         # Get current state (Saved CSV)
         current_df = st.session_state.boost_data.copy()
+        current_df = standardize_boost_columns(current_df) # Ensure clean cols
         
         # We need to construct a new list of rows
         updated_rows = []
@@ -441,10 +485,14 @@ if fetch_btn:
                 if name in api_data_map:
                     api_row = api_data_map[name]
                     new_row['Injury'] = api_row.get('Injury', '')
+                    # UPDATE DATE to current target date if player found
+                    new_row['Date'] = str(target_date)
                     
                     # Update boost ONLY if API has a better/new boost > 0.0
                     api_boost = api_row.get('Boost', 0.0)
                     old_boost = row.get('Boost', 0.0)
+                    
+                    # Preserve old boost if API returns 0.0
                     if api_boost > 0.0 and api_boost != old_boost:
                          new_row['Boost'] = api_boost
                 
@@ -471,6 +519,8 @@ if st.session_state.proj_df is not None:
 
 if proceed:
     df_boosts = st.session_state.boost_data
+    df_boosts = standardize_boost_columns(df_boosts) # Ensure columns match before merge
+    
     df_proj = st.session_state.proj_df
     
     df_proj_copy = None
@@ -506,6 +556,7 @@ if proceed:
             
             df_proj.columns = [str(c).strip() for c in df_proj.columns]
             
+            # --- Column Detection ---
             first_name_col = find_col(df_proj.columns, ["first name", "firstname", "first"])
             last_name_col = find_col(df_proj.columns, ["last name", "lastname", "last"])
             
@@ -518,6 +569,7 @@ if proceed:
 
             points_col = None 
             
+            # --- SPECIAL NBA RATING LOGIC ---
             if selected_sport == "nba":
                 nba_cols_map = {
                     "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
@@ -551,6 +603,7 @@ if proceed:
             team_col = find_col(df_proj.columns, ["team", "tm", "squad"])
             opp_col = find_col(df_proj.columns, ["opp", "opponent", "vs"])
             
+            # --- FIXED INJURY FILTERING (CSV Source) ---
             injury_csv_col = find_col(df_proj.columns, ["injury", "status"])
             if injury_csv_col:
                 df_proj = df_proj[~df_proj[injury_csv_col].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])]
@@ -577,8 +630,10 @@ if proceed:
                 df_boosts['join_key'] = df_boosts['Player Name'].apply(normalize_name)
                 df_proj['join_key'] = df_proj[name_col].apply(normalize_name)
                 
+                # Right Join: Use CSV as master list to ensure all projections are present
                 merged_df = pd.merge(df_boosts, df_proj, on='join_key', how='right')
                 
+                # Fill NAs
                 merged_df['Boost'] = merged_df['Boost'].fillna(0.0)
                 merged_df['Player Name'] = merged_df['Player Name'].fillna(merged_df[name_col])
                 if pos_col:
@@ -586,6 +641,7 @@ if proceed:
                 merged_df['Injury'] = merged_df['Injury'].fillna('')
                 merged_df['Sport'] = merged_df['Sport'].fillna(selected_sport.upper())
 
+                # Post-merge injury check
                 merged_df = merged_df[~merged_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])]
 
                 if merged_df.empty:
