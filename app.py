@@ -12,7 +12,7 @@ import unicodedata
 # 1. LIVE BOOSTS CSV (Your Google Sheet with saved multipliers)
 SAVED_BOOSTS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1721203281&single=true&output=csv"
 
-# 2. PROJECTION SOURCES
+# 2. PROJECTION SOURCES (Updated Google Sheet Links)
 SPORT_PROJECTION_URLS = {
     "nba": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=0&single=true&output=csv", 
     "nfl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1180552482&single=true&output=csv",
@@ -107,43 +107,18 @@ def calculate_nba_custom_rating(row, mapping):
 
     return round(rating, 2)
 
-def fetch_data_for_sport(sport):
-    """Fetches player data from API."""
+def fetch_data_for_sport(sport, target_date):
+    """Fetches player data from API using the selected date."""
     letters = string.ascii_uppercase
     session = requests.Session()
     sport_data = []
     seen_players = set() 
 
-    current_us_date = get_fantasy_day()
-    target_dates = [current_us_date]
-    if sport.lower() == 'nfl':
-        target_dates = [current_us_date + datetime.timedelta(days=i) for i in range(7)]
-
-    active_date_str = str(current_us_date)
+    # Strict Date Strategy: Only check the specific date requested
+    target_dates = [target_date]
+    active_date_str = str(target_date)
     
-    if len(target_dates) > 1:
-        found_date = False
-        for d in target_dates:
-            d_str = str(d)
-            probe_url = (
-                f"https://api.real.vg/players/sport/{sport}/search"
-                f"?day={d_str}&includeNoOneOption=false"
-                f"&query=S&searchType=ratingLineup"
-            )
-            try:
-                r = session.get(probe_url, timeout=3)
-                if r.status_code == 200:
-                    data = r.json()
-                    if data.get("players"):
-                        active_date_str = d_str
-                        found_date = True
-                        break
-            except:
-                pass
-        
-        if not found_date:
-            active_date_str = str(current_us_date)
-
+    # Fetch Full Alphabet
     for letter in letters:
         query = letter
         url = (
@@ -306,6 +281,9 @@ with st.sidebar:
     st.header("1. Boost Data")
     selected_sport = st.selectbox("Select League", ["nba", "nhl", "nfl"], index=0)
     
+    # NEW: Date Picker for explicit control
+    target_date = st.date_input("Game Date", get_fantasy_day())
+    
     fetch_btn = st.button("Fetch Live Boosts (Update Injuries)")
 
     # Allow downloading boosts whenever data is present
@@ -329,6 +307,11 @@ with st.sidebar:
     pasted_text = None
     current_proj_url = None
     
+    # Initialize session state for Projections if not present
+    if 'proj_df' not in st.session_state:
+        st.session_state.proj_df = None
+    
+    # --- Projection Logic with Persistence ---
     if input_method == "Use Global/Public Projections":
         sport_key = selected_sport.lower()
         url = SPORT_PROJECTION_URLS.get(sport_key)
@@ -336,8 +319,31 @@ with st.sidebar:
             st.success(f"✅ URL Configured for {sport_key.upper()}")
             st.caption(f"Source: {url[:40]}...")
             current_proj_url = url
+            
+            # 1. AUTO-LOAD if missing
+            if st.session_state.proj_df is None:
+                with st.spinner(f"Auto-loading {sport_key.upper()} projections..."):
+                    df, err = load_projections_from_url(url)
+                    if df is not None:
+                        st.session_state.proj_df = df
+                        st.rerun() # Refresh to update main area immediately
+                    else:
+                        st.error(f"Auto-load failed: {err}")
+            
+            # 2. Manual Refresh Button
+            if st.button(f"Refresh {sport_key.upper()} Projections"):
+                with st.spinner(f"Refreshing {sport_key.upper()} projections..."):
+                    df, err = load_projections_from_url(url)
+                    if df is not None:
+                        st.session_state.proj_df = df
+                        st.success("Projections Refreshed!")
+                        st.rerun()
+                    else:
+                        st.error(f"Failed to refresh: {err}")
+                
         else:
             st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
+            
     elif input_method == "Upload CSV":
         st.info("Upload CSV with Name, Points (e.g. 'FPTS', 'Proj'), and Position.")
         uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
@@ -382,7 +388,8 @@ if fetch_btn:
     status_text = st.empty()
     try:
         status_text.text(f"Fetching {selected_sport.upper()}...")
-        data = fetch_data_for_sport(selected_sport)
+        # Now passing target_date to the fetch function
+        data = fetch_data_for_sport(selected_sport, target_date)
         all_results.extend(data)
     except Exception as e:
         st.error(f"Error fetching data: {e}")
@@ -405,8 +412,6 @@ if fetch_btn:
         
         # 1. Update Existing Players in Saved CSV
         for _, row in current_df.iterrows():
-            # Only process if sport matches (or process all? Better to be safe and only touch current sport)
-            # The CSV might contain mixed sports.
             if str(row.get('Sport', '')).upper() == selected_sport.upper():
                 name = row['Player Name']
                 processed_names.add(name)
@@ -418,12 +423,10 @@ if fetch_btn:
                 if name in api_data_map:
                     api_row = api_data_map[name]
                     new_row['Injury'] = api_row.get('Injury', '')
-                    # Note: We do NOT update Boost from API here, because API might be 0.0 if game started.
-                    # We trust the CSV boost.
+                    # We do NOT update Boost from API here to avoid 0.0 override
                 
                 updated_rows.append(new_row)
             else:
-                # Keep other sports as is
                 updated_rows.append(row.to_dict())
                 
         # 2. Add New Players found in API but not in CSV
@@ -431,7 +434,6 @@ if fetch_btn:
             if name not in processed_names:
                 updated_rows.append(row)
                 
-        # Save back to session state
         st.session_state.boost_data = pd.DataFrame(updated_rows)
         st.success(f"Updated Injury Statuses for {selected_sport.upper()}!")
     else:
@@ -453,7 +455,6 @@ if proceed:
     source_type = None
     
     if input_method == "Use Global/Public Projections" and current_proj_url:
-        # Load fresh copy if not in state, or use state
         if st.session_state.proj_df is None:
              df_proj_copy, source_type = load_projections_from_url(current_proj_url)
              if df_proj_copy is not None:
@@ -476,13 +477,12 @@ if proceed:
 
     if df_proj_copy is not None:
         try:
-            df_proj = df_proj_copy.copy() # Work on a copy
+            df_proj = df_proj_copy.copy() 
             if isinstance(df_proj.columns, pd.MultiIndex):
                 df_proj.columns = [' '.join(col).strip() for col in df_proj.columns.values]
             
             df_proj.columns = [str(c).strip() for c in df_proj.columns]
             
-            # --- Column Detection ---
             first_name_col = find_col(df_proj.columns, ["first name", "firstname", "first"])
             last_name_col = find_col(df_proj.columns, ["last name", "lastname", "last"])
             
@@ -495,7 +495,6 @@ if proceed:
 
             points_col = None 
             
-            # --- SPECIAL NBA RATING LOGIC ---
             if selected_sport == "nba":
                 nba_cols_map = {
                     "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
@@ -529,7 +528,6 @@ if proceed:
             team_col = find_col(df_proj.columns, ["team", "tm", "squad"])
             opp_col = find_col(df_proj.columns, ["opp", "opponent", "vs"])
             
-            # --- FIXED INJURY FILTERING (CSV Source) ---
             injury_csv_col = find_col(df_proj.columns, ["injury", "status"])
             if injury_csv_col:
                 df_proj = df_proj[~df_proj[injury_csv_col].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])]
@@ -556,10 +554,8 @@ if proceed:
                 df_boosts['join_key'] = df_boosts['Player Name'].apply(normalize_name)
                 df_proj['join_key'] = df_proj[name_col].apply(normalize_name)
                 
-                # Right Join: Use CSV as master list to ensure all projections are present
                 merged_df = pd.merge(df_boosts, df_proj, on='join_key', how='right')
                 
-                # Fill NAs
                 merged_df['Boost'] = merged_df['Boost'].fillna(0.0)
                 merged_df['Player Name'] = merged_df['Player Name'].fillna(merged_df[name_col])
                 if pos_col:
@@ -567,7 +563,6 @@ if proceed:
                 merged_df['Injury'] = merged_df['Injury'].fillna('')
                 merged_df['Sport'] = merged_df['Sport'].fillna(selected_sport.upper())
 
-                # Post-merge injury check (This uses the updated 'Injury' column from the API/Merge logic)
                 merged_df = merged_df[~merged_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])]
 
                 if merged_df.empty:
@@ -602,13 +597,7 @@ if proceed:
 
                     merged_df['Bias'] = merged_df.apply(get_bias_multiplier, axis=1)
                     merged_df['Adjusted Projection'] = merged_df['Projection'] * merged_df['Bias']
-                    
-                    # Score Calculation Logic:
-                    # If Boost is 0.0, we assume the player adds the BASE slot value (e.g. +2.0x, +1.8x).
-                    # Optimization Score = (Boost + 2.0) * Projection
                     merged_df['Optimization Score'] = (merged_df['Boost'] + 2.0) * merged_df['Adjusted Projection']
-                    
-                    # Estimated Score = Boost * Projection (Raw score from boost alone)
                     merged_df['Est. Score'] = merged_df['Boost'] * merged_df['Projection']
 
                     tab1, tab2, tab3 = st.tabs(["📊 Data Browser", "💎 Best Value", "🚀 Lineup Optimizer"])
@@ -617,7 +606,6 @@ if proceed:
                         st.markdown("### Player Pool (Raw Data)")
                         cols = ['Sport', 'Slate', 'Game', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Optimization Score']
                         cols = [c for c in cols if c in merged_df.columns]
-                        # Sort by Optimization Score so 0-boost players appear correctly based on their projection value
                         st.dataframe(merged_df[cols].sort_values('Optimization Score', ascending=False), use_container_width=True)
                         csv_data = merged_df[cols].to_csv(index=False)
                         st.download_button("Download Data CSV", csv_data, "player_pool.csv", "text/csv")
