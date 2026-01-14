@@ -8,9 +8,13 @@ import pulp
 import io
 import unicodedata
 
-# --- ⬇️ PASTE YOUR LINKS HERE (CSV or Webpages) ⬇️ ---
+# --- ⬇️ CONFIGURATION LINKS ⬇️ ---
+# 1. LIVE BOOSTS CSV (Your Google Sheet with saved multipliers)
+SAVED_BOOSTS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1721203281&single=true&output=csv"
+
+# 2. PROJECTION SOURCES
 SPORT_PROJECTION_URLS = {
-     "nba": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=0&single=true&output=csv", 
+    "nba": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=0&single=true&output=csv", 
     "nfl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1180552482&single=true&output=csv",
     "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv"
 }
@@ -21,7 +25,7 @@ st.set_page_config(page_title="Player Boost & Optimizer", layout="wide")
 
 st.title("🏀 🏒 Player Boost & Lineup Optimizer")
 st.markdown("""
-This tool fetches live **Boost Multipliers** from the API and allows you to merge them with 
+This tool fetches live **Boost Multipliers** and allows you to merge them with 
 **Fantasy Projections** to find the highest-scoring lineups using **Slot-Based Optimization**.
 """)
 
@@ -36,7 +40,10 @@ def normalize_name(name):
     """Robust normalization for names with accent removal."""
     n = str(name).lower()
     # Normalize unicode characters (e.g. Doncic vs Dončić)
-    n = unicodedata.normalize('NFKD', n).encode('ascii', 'ignore').decode('utf-8')
+    try:
+        n = unicodedata.normalize('NFKD', n).encode('ascii', 'ignore').decode('utf-8')
+    except:
+        pass
     
     suffixes = [' jr', ' sr', ' ii', ' iii', ' iv', ' v', ' jr.', ' sr.']
     for suffix in suffixes:
@@ -182,7 +189,6 @@ def fetch_data_for_sport(sport):
                     except ValueError:
                         pass 
                 
-                # Append player regardless of whether they had a boost found or not
                 sport_data.append({
                     "Sport": sport.upper(),
                     "Player Name": full_name,
@@ -229,8 +235,6 @@ def run_optimization(df, num_lineups=1):
     if len(df) < NUM_SLOTS:
         return None
 
-    # Sort by Optimization Score (Boost + 2.0 * Projection)
-    # This prioritizes players even if their boost is 0.0, as long as projection is high
     df = df.sort_values('Optimization Score', ascending=False)
     df = df.drop_duplicates(subset=['Player Name'], keep='first').reset_index(drop=True)
     
@@ -250,8 +254,6 @@ def run_optimization(df, num_lineups=1):
             raw_boost = df.loc[i, 'Boost']
             adj_proj = df.loc[i, 'Adjusted Projection'] 
             slot_add = SLOT_ADDERS[j]
-            # Points = (Boost + SlotMultiplier) * Projection
-            # If Boost is 0.0, it becomes (0.0 + SlotMultiplier) * Projection
             points = (raw_boost + slot_add) * adj_proj
             obj_terms.append(points * x[i][j])
             
@@ -304,27 +306,13 @@ with st.sidebar:
     st.header("1. Boost Data")
     selected_sport = st.selectbox("Select League", ["nba", "nhl", "nfl"], index=0)
     
-    boost_source = st.radio("Boost Source", ["Fetch Live API", "Upload Saved Boosts"])
-    
-    fetch_triggered = False
-    
-    if boost_source == "Fetch Live API":
-        if st.button("Fetch Live Boosts"):
-            fetch_triggered = True
-    else:
-        uploaded_boosts = st.file_uploader("Upload 'boosts_backup.csv'", type="csv")
-        if uploaded_boosts:
-            try:
-                st.session_state.boost_data = pd.read_csv(uploaded_boosts)
-                st.success("Boosts loaded from file!")
-            except Exception as e:
-                st.error(f"Error loading CSV: {e}")
+    fetch_btn = st.button("Fetch Live Boosts (Update Injuries)")
 
     # Allow downloading boosts whenever data is present
     if 'boost_data' in st.session_state and not st.session_state.boost_data.empty:
         csv_buffer = st.session_state.boost_data.to_csv(index=False).encode('utf-8')
         st.download_button(
-            label="💾 Save/Download Current Boosts",
+            label="💾 Save Current Boosts",
             data=csv_buffer,
             file_name=f"boosts_backup_{datetime.date.today()}.csv",
             mime="text/csv"
@@ -341,11 +329,6 @@ with st.sidebar:
     pasted_text = None
     current_proj_url = None
     
-    # Initialize session state for Projections if not present
-    if 'proj_df' not in st.session_state:
-        st.session_state.proj_df = None
-    
-    # --- Projection Logic with Persistence ---
     if input_method == "Use Global/Public Projections":
         sport_key = selected_sport.lower()
         url = SPORT_PROJECTION_URLS.get(sport_key)
@@ -353,31 +336,8 @@ with st.sidebar:
             st.success(f"✅ URL Configured for {sport_key.upper()}")
             st.caption(f"Source: {url[:40]}...")
             current_proj_url = url
-            
-            # 1. AUTO-LOAD if missing
-            if st.session_state.proj_df is None:
-                with st.spinner(f"Auto-loading {sport_key.upper()} projections..."):
-                    df, err = load_projections_from_url(url)
-                    if df is not None:
-                        st.session_state.proj_df = df
-                        st.rerun() # Refresh to update main area immediately
-                    else:
-                        st.error(f"Auto-load failed: {err}")
-            
-            # 2. Manual Refresh Button
-            if st.button(f"Refresh {sport_key.upper()} Projections"):
-                with st.spinner(f"Refreshing {sport_key.upper()} projections..."):
-                    df, err = load_projections_from_url(url)
-                    if df is not None:
-                        st.session_state.proj_df = df
-                        st.success("Projections Refreshed!")
-                        st.rerun()
-                    else:
-                        st.error(f"Failed to refresh: {err}")
-                
         else:
             st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
-            
     elif input_method == "Upload CSV":
         st.info("Upload CSV with Name, Points (e.g. 'FPTS', 'Proj'), and Position.")
         uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
@@ -401,10 +361,22 @@ with st.sidebar:
     num_lineups = st.slider("Number of Lineups", 1, 10, 3)
 
 # --- Main Logic ---
-if 'boost_data' not in st.session_state:
-    st.session_state.boost_data = pd.DataFrame()
 
-if fetch_triggered:
+# 1. Initialize Boost Data (Auto-Load from Google Sheet)
+if 'boost_data' not in st.session_state:
+    try:
+        # Load from the Google Sheet URL provided by user
+        saved_df = pd.read_csv(SAVED_BOOSTS_URL)
+        st.session_state.boost_data = saved_df
+    except Exception as e:
+        st.session_state.boost_data = pd.DataFrame(columns=['Sport', 'Player Name', 'Position', 'Boost', 'Date', 'Injury'])
+        st.error(f"Could not load Saved Boosts from Google Sheet: {e}")
+
+if 'proj_df' not in st.session_state:
+    st.session_state.proj_df = None
+
+# 2. Fetch Live Logic (Merges into Saved Data)
+if fetch_btn:
     all_results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -419,37 +391,51 @@ if fetch_triggered:
     progress_bar.empty()
     
     if all_results:
-        new_df = pd.DataFrame(all_results)
+        # Map of API results: Name -> Row
+        api_data_map = {row['Player Name']: row for row in all_results}
         
-        # --- PERSISTENCE LOGIC (Smart Merge) ---
-        if not st.session_state.boost_data.empty:
-            other_sports_df = st.session_state.boost_data[st.session_state.boost_data['Sport'] != selected_sport.upper()]
-            old_sport_df = st.session_state.boost_data[st.session_state.boost_data['Sport'] == selected_sport.upper()]
-            
-            old_data_map = {row['Player Name']: row.to_dict() for _, row in old_sport_df.iterrows()}
-            final_data_map = {row['Player Name']: row for row in all_results}
-            
-            for name, old_row in old_data_map.items():
-                old_boost = old_row.get('Boost', 0.0)
-                if old_boost > 0.0:
-                    if name not in final_data_map:
-                        final_data_map[name] = old_row
-                    elif final_data_map[name]['Boost'] == 0.0:
-                        final_data_map[name]['Boost'] = old_boost
-                        
-            merged_sport_df = pd.DataFrame(list(final_data_map.values()))
-            st.session_state.boost_data = pd.concat([other_sports_df, merged_sport_df], ignore_index=True)
-        else:
-            st.session_state.boost_data = new_df
-
-        found_dates = sorted(list(set(r['Date'] for r in all_results if 'Date' in r)))
-        date_msg = f" (Date: {found_dates[0]})" if len(found_dates) == 1 else ""
-        st.success(f"Fetched {len(st.session_state.boost_data)} players{date_msg}.")
+        # Get current state (Saved CSV)
+        current_df = st.session_state.boost_data.copy()
+        
+        # We need to construct a new list of rows
+        updated_rows = []
+        
+        # Track which names we have processed
+        processed_names = set()
+        
+        # 1. Update Existing Players in Saved CSV
+        for _, row in current_df.iterrows():
+            # Only process if sport matches (or process all? Better to be safe and only touch current sport)
+            # The CSV might contain mixed sports.
+            if str(row.get('Sport', '')).upper() == selected_sport.upper():
+                name = row['Player Name']
+                processed_names.add(name)
+                
+                # Start with saved data (Trusted Boost)
+                new_row = row.to_dict()
+                
+                # If API has this player, update INJURY status (Trusted Status)
+                if name in api_data_map:
+                    api_row = api_data_map[name]
+                    new_row['Injury'] = api_row.get('Injury', '')
+                    # Note: We do NOT update Boost from API here, because API might be 0.0 if game started.
+                    # We trust the CSV boost.
+                
+                updated_rows.append(new_row)
+            else:
+                # Keep other sports as is
+                updated_rows.append(row.to_dict())
+                
+        # 2. Add New Players found in API but not in CSV
+        for name, row in api_data_map.items():
+            if name not in processed_names:
+                updated_rows.append(row)
+                
+        # Save back to session state
+        st.session_state.boost_data = pd.DataFrame(updated_rows)
+        st.success(f"Updated Injury Statuses for {selected_sport.upper()}!")
     else:
-        st.warning(f"No boosts found for {selected_sport.upper()}. (For NFL, we checked next 7 days).")
-        # Initialize empty DF to allow CSV-only workflow if API returns nothing
-        if st.session_state.boost_data.empty:
-            st.session_state.boost_data = pd.DataFrame(columns=['Sport', 'Player Name', 'Position', 'Boost', 'Date', 'Injury'])
+        st.warning(f"No active data found in API for {selected_sport.upper()}. Using Saved Boosts.")
 
 # Check proceed condition
 proceed = False
@@ -462,8 +448,35 @@ if proceed:
     df_boosts = st.session_state.boost_data
     df_proj = st.session_state.proj_df
     
-    if df_proj is not None:
+    df_proj_copy = None
+    error_msg = None
+    source_type = None
+    
+    if input_method == "Use Global/Public Projections" and current_proj_url:
+        # Load fresh copy if not in state, or use state
+        if st.session_state.proj_df is None:
+             df_proj_copy, source_type = load_projections_from_url(current_proj_url)
+             if df_proj_copy is not None:
+                 st.session_state.proj_df = df_proj_copy
+             else:
+                 error_msg = source_type
+        else:
+             df_proj_copy = st.session_state.proj_df
+             
+    elif uploaded_file:
+        try: df_proj_copy = pd.read_csv(uploaded_file)
+        except Exception as e: error_msg = f"Error reading file: {e}"
+    elif pasted_text:
         try:
+            df_proj_copy = pd.read_csv(io.StringIO(pasted_text), sep="\t")
+            if len(df_proj_copy.columns) < 2: df_proj_copy = pd.read_csv(io.StringIO(pasted_text), sep=",")
+        except Exception as e: error_msg = f"Error reading text: {e}"
+    elif st.session_state.proj_df is not None:
+        df_proj_copy = st.session_state.proj_df
+
+    if df_proj_copy is not None:
+        try:
+            df_proj = df_proj_copy.copy() # Work on a copy
             if isinstance(df_proj.columns, pd.MultiIndex):
                 df_proj.columns = [' '.join(col).strip() for col in df_proj.columns.values]
             
@@ -554,7 +567,7 @@ if proceed:
                 merged_df['Injury'] = merged_df['Injury'].fillna('')
                 merged_df['Sport'] = merged_df['Sport'].fillna(selected_sport.upper())
 
-                # Post-merge injury check
+                # Post-merge injury check (This uses the updated 'Injury' column from the API/Merge logic)
                 merged_df = merged_df[~merged_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])]
 
                 if merged_df.empty:
