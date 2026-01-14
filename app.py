@@ -386,16 +386,54 @@ if fetch_btn:
     progress_bar.empty()
     
     if all_results:
-        st.session_state.boost_data = pd.DataFrame(all_results)
+        new_df = pd.DataFrame(all_results)
+        
+        # --- PERSISTENCE LOGIC (Smart Merge) ---
+        # If we have existing data, ensure we don't overwrite valid boosts with 0.0/missing
+        if not st.session_state.boost_data.empty:
+            # 1. Separate current sport data from other sports in memory
+            # We only want to update the current sport, keeping others safe
+            other_sports_df = st.session_state.boost_data[st.session_state.boost_data['Sport'] != selected_sport.upper()]
+            old_sport_df = st.session_state.boost_data[st.session_state.boost_data['Sport'] == selected_sport.upper()]
+            
+            # Map of old data: Player Name -> Row Dict
+            old_data_map = {row['Player Name']: row.to_dict() for _, row in old_sport_df.iterrows()}
+            
+            # Map of new data: Player Name -> Row Dict
+            final_data_map = {row['Player Name']: row for row in all_results}
+            
+            # 2. Iterate old data to preserve boosts
+            for name, old_row in old_data_map.items():
+                old_boost = old_row.get('Boost', 0.0)
+                
+                if old_boost > 0.0:
+                    # Case A: Player disappeared from API (Game Started?), keep old record
+                    if name not in final_data_map:
+                        final_data_map[name] = old_row
+                    # Case B: Player exists in API but lost boost (returned 0.0), restore old boost
+                    elif final_data_map[name]['Boost'] == 0.0:
+                        final_data_map[name]['Boost'] = old_boost
+                        
+            # Reconstruct DF for current sport
+            merged_sport_df = pd.DataFrame(list(final_data_map.values()))
+            
+            # Combine back with other sports
+            st.session_state.boost_data = pd.concat([other_sports_df, merged_sport_df], ignore_index=True)
+            
+        else:
+            # First fetch, just save it
+            st.session_state.boost_data = new_df
+
         found_dates = sorted(list(set(r['Date'] for r in all_results if 'Date' in r)))
         date_msg = f" (Date: {found_dates[0]})" if len(found_dates) == 1 else ""
         st.success(f"Fetched {len(st.session_state.boost_data)} players{date_msg}.")
     else:
         st.warning(f"No boosts found for {selected_sport.upper()}. (For NFL, we checked next 7 days).")
         # Initialize empty DF to allow CSV-only workflow if API returns nothing
-        st.session_state.boost_data = pd.DataFrame(columns=['Sport', 'Player Name', 'Position', 'Boost', 'Date', 'Injury'])
+        if st.session_state.boost_data.empty:
+            st.session_state.boost_data = pd.DataFrame(columns=['Sport', 'Player Name', 'Position', 'Boost', 'Date', 'Injury'])
 
-# Check proceed condition: We need EITHER boost data OR projection data
+# Check proceed condition
 proceed = False
 if not st.session_state.boost_data.empty:
     proceed = True
@@ -404,9 +442,23 @@ if st.session_state.proj_df is not None:
 
 if proceed:
     df_boosts = st.session_state.boost_data
-    # Use the Session State Projections (Snapshot)
-    df_proj = st.session_state.proj_df
+    df_proj = None
+    error_msg = None
+    source_type = None
     
+    if input_method == "Use Global/Public Projections" and current_proj_url:
+        df_proj, source_type = load_projections_from_url(current_proj_url)
+        if df_proj is None:
+            error_msg = source_type
+    elif uploaded_file:
+        try: df_proj = pd.read_csv(uploaded_file)
+        except Exception as e: error_msg = f"Error reading file: {e}"
+    elif pasted_text:
+        try:
+            df_proj = pd.read_csv(io.StringIO(pasted_text), sep="\t")
+            if len(df_proj.columns) < 2: df_proj = pd.read_csv(io.StringIO(pasted_text), sep=",")
+        except Exception as e: error_msg = f"Error reading text: {e}"
+
     if df_proj is not None:
         try:
             if isinstance(df_proj.columns, pd.MultiIndex):
