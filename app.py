@@ -170,7 +170,7 @@ def fetch_data_for_sport(sport, target_date):
     session = requests.Session()
     sport_data = []
     
-    # Strict Date Strategy: Only check the specific date requested
+    # Strict Date Strategy: Only check the selected date
     active_date_str = str(target_date)
 
     # Parallel Fetch Alphabet + Accented Characters
@@ -254,6 +254,7 @@ def run_optimization(df, num_lineups=1):
     if len(df) < NUM_SLOTS:
         return None
 
+    # Sort by Optimization Score
     df = df.sort_values('Optimization Score', ascending=False)
     df = df.drop_duplicates(subset=['Player Name'], keep='first').reset_index(drop=True)
     
@@ -325,7 +326,16 @@ with st.sidebar:
     st.header("1. Boost Data")
     selected_sport = st.selectbox("Select League", ["nba", "nhl", "nfl"], index=0)
     
-    # Simple Fetch Button
+    # --- AUTO-CLEAR STALE PROJECTIONS ---
+    if 'current_sport' not in st.session_state:
+        st.session_state.current_sport = selected_sport
+    
+    # If the user switched sport, clear the old projection dataframe
+    if st.session_state.current_sport != selected_sport:
+        st.session_state.proj_df = None
+        st.session_state.current_sport = selected_sport
+        st.rerun()
+
     fetch_btn = st.button("Fetch Live Boosts")
 
     st.header("2. Projections Source")
@@ -344,9 +354,8 @@ with st.sidebar:
         url = SPORT_PROJECTION_URLS.get(sport_key)
         if url:
             st.success(f"✅ URL Configured for {sport_key.upper()}")
+            st.caption(f"Source: {url[:40]}...")
             current_proj_url = url
-        else:
-            st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
     elif input_method == "Upload CSV":
         uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
     elif input_method == "Paste Text":
