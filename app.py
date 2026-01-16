@@ -356,6 +356,8 @@ with st.sidebar:
             st.success(f"✅ URL Configured for {sport_key.upper()}")
             st.caption(f"Source: {url[:40]}...")
             current_proj_url = url
+        else:
+            st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
     elif input_method == "Upload CSV":
         uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
     elif input_method == "Paste Text":
@@ -504,6 +506,10 @@ if proceed:
             df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_nba_custom_rating(row, nba_cols_map), axis=1)
             points_col = 'Calculated_Rating'
             st.success("✅ NBA Custom Efficiency Rating Applied")
+    
+    # --- SPECIAL NHL PROJECTION LOGIC ---
+    if selected_sport == "nhl" and not points_col:
+        points_col = find_col(df_proj.columns, ["ppg_projection"])
 
     if not points_col:
         points_col = find_col(df_proj.columns, ["ppg", "fantasy", "proj", "fpts", "pts", "avg", "fp"])
