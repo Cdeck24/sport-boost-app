@@ -7,15 +7,13 @@ import concurrent.futures
 import pulp
 import io
 import unicodedata
-import json
 
 # --- ⬇️ CONFIGURATION ⬇️ ---
-# PROJECTION SOURCES (Direct Website Links)
-# The app now auto-detects these are from Daily Fantasy Fuel and uses their API.
+# PROJECTION SOURCES (Google Sheet Links)
 SPORT_PROJECTION_URLS = {
-    "nba": "https://www.dailyfantasyfuel.com/nba/projections/", 
-    "nfl": "https://www.dailyfantasyfuel.com/nfl/projections/",
-    "nhl": "https://www.dailyfantasyfuel.com/nhl/projections/"
+    "nba": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=0&single=true&output=csv", 
+    "nfl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1180552482&single=true&output=csv",
+    "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv"
 }
 # ---------------------------------------------------
 
@@ -224,59 +222,18 @@ def fetch_data_for_sport(sport, target_date):
     return sport_data
 
 def load_projections_from_url(url):
-    """
-    Smart Fetcher: 
-    1. Checks if URL is Daily Fantasy Fuel -> Uses their hidden API.
-    2. Fallback -> Tries CSV.
-    3. Fallback -> Tries HTML Table scraping.
-    """
+    """Smart Fetcher: Tries to read URL as CSV first, then as HTML tables."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
-    
     try:
-        # --- 1. Daily Fantasy Fuel API Hook ---
-        if "dailyfantasyfuel.com" in url:
-            # Extract sport from URL (e.g., .../nba/...)
-            parts = url.split('/')
-            sport = None
-            for p in parts:
-                if p in ['nba', 'nfl', 'nhl', 'mlb']:
-                    sport = p
-                    break
-            
-            if sport:
-                api_url = f"https://www.dailyfantasyfuel.com/api/v1/projections/{sport}/"
-                print(f"Fetching from DFF API: {api_url}")
-                api_resp = requests.get(api_url, headers=headers, timeout=10)
-                if api_resp.status_code == 200:
-                    json_data = api_resp.json()
-                    # DFF JSON structure: list of dicts. Easy to convert.
-                    # We need to flatten 'stats' if it exists for the NBA formula
-                    
-                    flat_data = []
-                    for p in json_data:
-                        # Flatten the dictionary
-                        row = p.copy()
-                        # Often DFF puts stats in a nested dict or keeps them top level.
-                        # Flattening just in case.
-                        if 'stats' in p and isinstance(p['stats'], dict):
-                            for k, v in p['stats'].items():
-                                row[k] = v
-                        flat_data.append(row)
-                        
-                    return pd.DataFrame(flat_data), "DFF API"
-
-        # --- 2. Standard CSV/HTML Fetch ---
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         content = response.content
-        
         try:
             return pd.read_csv(io.BytesIO(content)), "CSV"
         except:
             pass
-            
         try:
             tables = pd.read_html(io.BytesIO(content))
             if tables:
@@ -285,9 +242,7 @@ def load_projections_from_url(url):
                     return largest_table, "HTML"
         except:
             pass
-            
-        return None, "Could not identify CSV, HTML, or API data."
-        
+        return None, "Could not identify CSV or HTML Table data."
     except Exception as e:
         return None, str(e)
 
@@ -375,6 +330,7 @@ with st.sidebar:
     if 'current_sport' not in st.session_state:
         st.session_state.current_sport = selected_sport
     
+    # If the user switched sport, clear the old projection dataframe
     if st.session_state.current_sport != selected_sport:
         st.session_state.proj_df = None
         st.session_state.current_sport = selected_sport
@@ -400,30 +356,8 @@ with st.sidebar:
             st.success(f"✅ URL Configured for {sport_key.upper()}")
             st.caption(f"Source: {url[:40]}...")
             current_proj_url = url
-            
-            # 1. AUTO-LOAD if missing
-            if st.session_state.proj_df is None:
-                with st.spinner(f"Auto-loading {sport_key.upper()} projections..."):
-                    df, err = load_projections_from_url(url)
-                    if df is not None:
-                        st.session_state.proj_df = df
-                        st.rerun()
-                    else:
-                        st.error(f"Auto-load failed: {err}")
-            
-            # 2. Manual Refresh
-            if st.button("Force Refresh Projections"):
-                with st.spinner("Refetching from Source..."):
-                     df, err = load_projections_from_url(url)
-                     if df is not None:
-                         st.session_state.proj_df = df
-                         st.success("Refreshed!")
-                         st.rerun()
-                     else:
-                         st.error(f"Failed: {err}")
         else:
             st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
-            
     elif input_method == "Upload CSV":
         uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
     elif input_method == "Paste Text":
@@ -443,6 +377,7 @@ if fetch_btn:
     status_text = st.empty()
     try:
         status_text.text(f"Fetching {selected_sport.upper()}...")
+        # Automatically use today's date (US time)
         fetch_date = get_fantasy_day()
         data = fetch_data_for_sport(selected_sport, fetch_date)
         all_results.extend(data)
@@ -453,7 +388,10 @@ if fetch_btn:
     progress_bar.empty()
     
     if all_results:
+        # Map of API results: Name -> Row
         api_data_map = {row['Player Name']: row for row in all_results}
+        
+        # Get current global state (creates empty DF if none exists)
         current_df = boost_store.get()
         if current_df.empty:
              current_df = pd.DataFrame(columns=['Sport', 'Player Name', 'Position', 'Boost', 'Date', 'Injury'])
@@ -463,18 +401,20 @@ if fetch_btn:
         updated_rows = []
         processed_names = set()
         
-        # Update Existing
+        # 1. Update Existing Players in Store (Preserve old boosts if API = 0.0)
         for _, row in current_df.iterrows():
             if str(row.get('Sport', '')).upper() == selected_sport.upper():
                 name = row['Player Name']
                 processed_names.add(name)
+                
                 new_row = row.to_dict()
-                new_row['Date'] = str(fetch_date) 
+                new_row['Date'] = str(fetch_date) # Update date to today
                 
                 if name in api_data_map:
                     api_row = api_data_map[name]
                     new_row['Injury'] = api_row.get('Injury', '')
                     
+                    # Update boost ONLY if API has valid new data > 0.0
                     api_boost = api_row.get('Boost', 0.0)
                     old_boost = row.get('Boost', 0.0)
                     if api_boost > 0.0 and api_boost != old_boost:
@@ -483,12 +423,13 @@ if fetch_btn:
                 updated_rows.append(new_row)
             else:
                 updated_rows.append(row.to_dict())
-        
-        # Add New
+                
+        # 2. Add New Players found in API
         for name, row in api_data_map.items():
             if name not in processed_names:
                 updated_rows.append(row)
                 
+        # Update Global Store
         boost_store.update(pd.DataFrame(updated_rows))
         st.success(f"Fetched and Merged Data for {selected_sport.upper()}!")
     else:
@@ -502,8 +443,13 @@ df_proj = st.session_state.proj_df
 df_proj_copy = None
 
 if input_method == "Use Global/Public Projections" and current_proj_url:
-    # Auto-load logic handled above in Sidebar
-    if st.session_state.proj_df is not None:
+    # Auto-load if missing
+    if st.session_state.proj_df is None:
+         df_proj_copy, _ = load_projections_from_url(current_proj_url)
+         if df_proj_copy is not None:
+             st.session_state.proj_df = df_proj_copy
+             st.rerun()
+    else:
          df_proj_copy = st.session_state.proj_df
          
 elif uploaded_file:
