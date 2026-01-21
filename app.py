@@ -169,23 +169,20 @@ def calculate_cbb_custom_rating(row, mapping):
     missed_fg = stats['fga'] - stats['fgm']
     missed_ft = stats['fta'] - stats['ftm']
 
-    # Scoring Weights
-    rating += two_pm * 0.57
-    rating += stats['3pm'] * 0.77
-    rating += stats['ftm'] * 0.15
-
-    # Efficiency Penalties
-    rating -= missed_fg * 0.10
-    rating -= missed_ft * 0.05
-
-    # Stats Weights
+    # 2. Add Positive Values
+    rating += two_pm * 0.60
+    rating += stats['3pm'] * 0.80
+    rating += stats['ftm'] * 0.13
+    
     rating += stats['reb'] * 0.14
-    rating += stats['ast'] * 0.18
-    rating += stats['stl'] * 0.25
-    rating += stats['blk'] * 0.29
+    rating += stats['ast'] * 0.22
+    rating += stats['stl'] * 0.30
+    rating += stats['blk'] * 0.30
 
-    # Turnover Penalty
-    rating -= stats['to'] * 0.24
+    # 3. Subtract Penalties
+    rating -= missed_fg * 0.20
+    rating -= missed_ft * 0.10
+    rating -= stats['to'] * 0.30
 
     return round(rating, 2)
 
@@ -392,6 +389,7 @@ with st.sidebar:
     if 'current_sport' not in st.session_state:
         st.session_state.current_sport = selected_sport
     
+    # If the user switched sport, clear the old projection dataframe
     if st.session_state.current_sport != selected_sport:
         st.session_state.proj_df = None
         st.session_state.current_sport = selected_sport
@@ -417,6 +415,11 @@ with st.sidebar:
             st.success(f"✅ URL Configured for {sport_key.upper()}")
             st.caption(f"Source: {url[:40]}...")
             current_proj_url = url
+        elif sport_key == "ncaam":
+             # CBB now has a URL configured, but we keep this check for safety
+             pass
+        else:
+            st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
     elif input_method == "Upload CSV":
         uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
     elif input_method == "Paste Text":
@@ -515,6 +518,7 @@ if not df_boosts.empty:
     proceed = True
 
 if proceed:
+    # Filter boost data for the selected sport immediately
     df_boosts = standardize_boost_columns(df_boosts)
     sport_boosts = df_boosts[df_boosts['Sport'].str.upper() == selected_sport.upper()].copy()
 
