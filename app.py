@@ -169,20 +169,23 @@ def calculate_cbb_custom_rating(row, mapping):
     missed_fg = stats['fga'] - stats['fgm']
     missed_ft = stats['fta'] - stats['ftm']
 
-    # 2. Add Positive Values
-    rating += two_pm * 0.60
-    rating += stats['3pm'] * 0.80
-    rating += stats['ftm'] * 0.13
-    
-    rating += stats['reb'] * 0.14
-    rating += stats['ast'] * 0.22
-    rating += stats['stl'] * 0.30
-    rating += stats['blk'] * 0.30
+    # Scoring Weights
+    rating += two_pm * 0.57
+    rating += stats['3pm'] * 0.77
+    rating += stats['ftm'] * 0.15
 
-    # 3. Subtract Penalties
-    rating -= missed_fg * 0.20
-    rating -= missed_ft * 0.10
-    rating -= stats['to'] * 0.30
+    # Efficiency Penalties
+    rating -= missed_fg * 0.10
+    rating -= missed_ft * 0.05
+
+    # Stats Weights
+    rating += stats['reb'] * 0.14
+    rating += stats['ast'] * 0.18
+    rating += stats['stl'] * 0.25
+    rating += stats['blk'] * 0.29
+
+    # Turnover Penalty
+    rating -= stats['to'] * 0.24
 
     return round(rating, 2)
 
@@ -238,7 +241,6 @@ def fetch_data_for_sport(sport, target_date):
                 future_to_req[executor.submit(fetch_letter, session, sport, d_str, letter)] = d_str
         
         for future in concurrent.futures.as_completed(future_to_req):
-            active_date_str = future_to_req[future]
             try:
                 players = future.result()
                 if not players: continue
@@ -688,7 +690,21 @@ if proceed:
                         game_options = ["ALL"] + unique_games
                         selected_games = st.multiselect("Filter by Game:", game_options, default=["ALL"])
                     
+                    # --- NEW: EXCLUDE PLAYERS MULTISELECT ---
+                    all_player_names = sorted(merged_df['Player Name'].dropna().unique().tolist())
+                    excluded_players = st.multiselect(
+                        "Filter by Player (Exclude):",
+                        all_player_names,
+                        default=[],
+                        placeholder="Search for players to exclude..."
+                    )
+                    
                     filtered_df = merged_df.copy()
+                    
+                    # Apply Exclusions
+                    if excluded_players:
+                         filtered_df = filtered_df[~filtered_df['Player Name'].isin(excluded_players)]
+
                     if "ALL" not in selected_slates:
                         filtered_df = filtered_df[filtered_df['Slate'].isin(selected_slates)]
                     if "ALL" not in selected_games:
