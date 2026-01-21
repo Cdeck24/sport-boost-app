@@ -209,16 +209,39 @@ def fetch_data_for_sport(sport, target_date):
     session = requests.Session()
     sport_data = []
     
-    target_date = get_fantasy_day()
-    active_date_str = str(target_date)
+    # Strict Date Strategy: Only check the selected date (plus next day to be safe for late/early games)
+    target_dates = [target_date, target_date + datetime.timedelta(days=1)]
+    if sport.lower() == 'nfl':
+        # Don't look ahead 7 days for NFL if we want strict control, but users usually want full week
+        # Keeping it strict to selection for now based on recent feedback
+        target_dates = [target_date]
+
+    # Probe Dates
+    valid_dates = []
+    for d in target_dates:
+        d_str = str(d)
+        probe_url = f"https://api.real.vg/players/sport/{sport}/search?day={d_str}&includeNoOneOption=false&query=a&searchType=ratingLineup"
+        try:
+            r = session.get(probe_url, timeout=3)
+            if r.status_code == 200 and r.json().get("players"):
+                valid_dates.append(d_str)
+        except:
+            pass
+            
+    if not valid_dates:
+        valid_dates = [str(target_date)]
 
     # Parallel Fetch Alphabet + Accented Characters
     letters = list(string.ascii_uppercase) + ['Š', 'Ć', 'Č', 'Ž', 'Đ', 'Ö', 'Ä', 'Ü', 'Å', 'Ø']
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_req = {executor.submit(fetch_letter, session, sport, active_date_str, letter): letter for letter in letters}
+        future_to_req = {}
+        for d_str in valid_dates:
+            for letter in letters:
+                future_to_req[executor.submit(fetch_letter, session, sport, d_str, letter)] = d_str
         
         for future in concurrent.futures.as_completed(future_to_req):
+            active_date_str = future_to_req[future]
             try:
                 players = future.result()
                 if not players: continue
@@ -258,7 +281,7 @@ def fetch_data_for_sport(sport, target_date):
             except:
                 continue
             
-    return sport_data, active_date_str
+    return sport_data, valid_dates[0] if valid_dates else str(target_date)
 
 def load_projections_from_url(url):
     """Smart Fetcher: Tries to read URL as CSV first, then as HTML tables."""
@@ -369,7 +392,6 @@ with st.sidebar:
     if 'current_sport' not in st.session_state:
         st.session_state.current_sport = selected_sport
     
-    # If the user switched sport, clear the old projection dataframe
     if st.session_state.current_sport != selected_sport:
         st.session_state.proj_df = None
         st.session_state.current_sport = selected_sport
@@ -395,11 +417,6 @@ with st.sidebar:
             st.success(f"✅ URL Configured for {sport_key.upper()}")
             st.caption(f"Source: {url[:40]}...")
             current_proj_url = url
-        elif sport_key == "ncaam":
-             # CBB now has a URL configured, but we keep this check for safety
-             pass
-        else:
-            st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
     elif input_method == "Upload CSV":
         uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
     elif input_method == "Paste Text":
@@ -498,7 +515,6 @@ if not df_boosts.empty:
     proceed = True
 
 if proceed:
-    # Filter boost data for the selected sport immediately
     df_boosts = standardize_boost_columns(df_boosts)
     sport_boosts = df_boosts[df_boosts['Sport'].str.upper() == selected_sport.upper()].copy()
 
@@ -546,7 +562,7 @@ if proceed:
             cbb_cols_map = {
                 "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
                 "fga": find_col(df_proj.columns, ["fieldGoalsAttempted", "fga"]),
-                "3pm": find_col(df_proj.columns, ["threePointsMade", "3pm"]),
+                "3pm": find_col(df_proj.columns, ["threePointsMade", "3pm", "3pt"]),
                 "ftm": find_col(df_proj.columns, ["freeThrowsMade", "ftm"]),
                 "fta": find_col(df_proj.columns, ["freeThrowsAttempted", "fta"]),
                 "reb": find_col(df_proj.columns, ["rebounds", "reb", "tot reb"]),
@@ -555,12 +571,15 @@ if proceed:
                 "blk": find_col(df_proj.columns, ["blocks", "blk"]),
                 "to":  find_col(df_proj.columns, ["turnovers", "to", "tov"])
             }
-            if all(v is not None for v in cbb_cols_map.values()):
+            
+            missing_keys = [k for k, v in cbb_cols_map.items() if v is None]
+            if not missing_keys:
                 df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_cbb_custom_rating(row, cbb_cols_map), axis=1)
                 points_col = 'Calculated_Rating'
                 st.success("✅ CBB Custom Efficiency Rating Applied")
+            else:
+                st.error(f"❌ CBB Custom Rating Failed. Missing columns for: {', '.join(missing_keys)}")
 
-        
         if selected_sport == "nhl" and not points_col:
             points_col = find_col(df_proj.columns, ["ppg_projection"])
 
@@ -686,6 +705,10 @@ if proceed:
                                         st.warning(f"**Questionable Status:** {', '.join(q_players)}")
                                     st.dataframe(
                                         lineup.drop(columns=['Injury']), 
+                                        column_config={
+                                            "Points": st.column_config.NumberColumn(format="%.2f"),
+                                            "Projection": st.column_config.NumberColumn(format="%.2f"),
+                                        },
                                         use_container_width=True,
                                         hide_index=True
                                     )
