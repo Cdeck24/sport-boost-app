@@ -204,43 +204,53 @@ def fetch_letter(session, sport, date_str, letter):
         pass
     return []
 
-def fetch_data_for_sport(sport, target_date):
-    """Fetches player data from API using strictly current fantasy day."""
+def fetch_data_for_sport(sport, base_date):
+    """Fetches player data from API, checking Yesterday, Today, and Tomorrow."""
     session = requests.Session()
     sport_data = []
     
-    # Strict Date Strategy: Only check the selected date (plus next day to be safe for late/early games)
-    target_dates = [target_date, target_date + datetime.timedelta(days=1)]
+    # SCAN STRATEGY: Check YESTERDAY, TODAY, and TOMORROW
+    # This covers all potential server timezone mismatches.
+    check_dates = [
+        base_date - datetime.timedelta(days=1),
+        base_date,
+        base_date + datetime.timedelta(days=1)
+    ]
+    
+    # For NFL, stick to the wider net if requested, but user asked for strictness recently
+    # keeping the small window for daily sports like NBA/NHL/CBB
     if sport.lower() == 'nfl':
-        # Don't look ahead 7 days for NFL if we want strict control, but users usually want full week
-        # Keeping it strict to selection for now based on recent feedback
-        target_dates = [target_date]
+        check_dates = [base_date + datetime.timedelta(days=i) for i in range(7)]
 
-    # Probe Dates
+    # 1. PROBE to find valid dates (using 'a' as a sample query)
     valid_dates = []
-    for d in target_dates:
+    for d in check_dates:
         d_str = str(d)
         probe_url = f"https://api.real.vg/players/sport/{sport}/search?day={d_str}&includeNoOneOption=false&query=a&searchType=ratingLineup"
         try:
             r = session.get(probe_url, timeout=3)
+            # If we get ANY players back, assume this is a valid slate day
             if r.status_code == 200 and r.json().get("players"):
                 valid_dates.append(d_str)
         except:
             pass
             
+    # Fallback to selected date if nothing found
     if not valid_dates:
-        valid_dates = [str(target_date)]
-
-    # Parallel Fetch Alphabet + Accented Characters
+        valid_dates = [str(base_date)]
+    
+    # 2. FETCH ALL DATA from valid dates
     letters = list(string.ascii_uppercase) + ['Š', 'Ć', 'Č', 'Ž', 'Đ', 'Ö', 'Ä', 'Ü', 'Å', 'Ø']
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    # Use ThreadPool to fetch all combos of (Date, Letter)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         future_to_req = {}
         for d_str in valid_dates:
             for letter in letters:
                 future_to_req[executor.submit(fetch_letter, session, sport, d_str, letter)] = d_str
         
         for future in concurrent.futures.as_completed(future_to_req):
+            date_found = future_to_req[future]
             try:
                 players = future.result()
                 if not players: continue
@@ -274,13 +284,13 @@ def fetch_data_for_sport(sport, target_date):
                         "Player Name": full_name,
                         "Position": position,
                         "Boost": boost_value,
-                        "Date": active_date_str,
+                        "Date": date_found, # Store the actual API date found
                         "Injury": injury_status
                     })
             except:
                 continue
             
-    return sport_data, valid_dates[0] if valid_dates else str(target_date)
+    return sport_data, valid_dates[-1] if valid_dates else str(base_date)
 
 def load_projections_from_url(url):
     """Smart Fetcher: Tries to read URL as CSV first, then as HTML tables."""
@@ -391,7 +401,6 @@ with st.sidebar:
     if 'current_sport' not in st.session_state:
         st.session_state.current_sport = selected_sport
     
-    # If the user switched sport, clear the old projection dataframe
     if st.session_state.current_sport != selected_sport:
         st.session_state.proj_df = None
         st.session_state.current_sport = selected_sport
@@ -441,8 +450,10 @@ if fetch_btn:
     status_text = st.empty()
     try:
         status_text.text(f"Fetching {selected_sport.upper()}...")
-        fetch_date = get_fantasy_day()
-        data, fetch_date_str = fetch_data_for_sport(selected_sport, fetch_date)
+        # Get "fantasy day" (US time)
+        base_fetch_date = get_fantasy_day()
+        # Fetch multi-day scan
+        data, latest_fetch_date = fetch_data_for_sport(selected_sport, base_fetch_date)
         all_results.extend(data)
     except Exception as e:
         st.error(f"Error fetching data: {e}")
@@ -451,7 +462,17 @@ if fetch_btn:
     progress_bar.empty()
     
     if all_results:
-        api_data_map = {row['Player Name']: row for row in all_results}
+        # Convert list to DF immediately to handle duplicates
+        raw_df = pd.DataFrame(all_results)
+        
+        # Sort by Date descending to keep the latest info for duplicates
+        raw_df = raw_df.sort_values('Date', ascending=False)
+        
+        # Drop duplicates, keeping the newest entry for each player
+        raw_df = raw_df.drop_duplicates(subset=['Player Name'], keep='first')
+        
+        api_data_map = {row['Player Name']: row.to_dict() for _, row in raw_df.iterrows()}
+        
         current_df = boost_store.get()
         if current_df.empty:
              current_df = pd.DataFrame(columns=['Sport', 'Player Name', 'Position', 'Boost', 'Date', 'Injury'])
@@ -460,18 +481,23 @@ if fetch_btn:
         updated_rows = []
         processed_names = set()
         
+        # 1. Update Existing Players in Store
         for _, row in current_df.iterrows():
             if str(row.get('Sport', '')).upper() == selected_sport.upper():
                 name = row['Player Name']
                 processed_names.add(name)
                 new_row = row.to_dict()
-                new_row['Date'] = str(fetch_date_str) 
+                
+                # Update date to latest scan date for consistency
+                new_row['Date'] = str(latest_fetch_date)
                 
                 if name in api_data_map:
                     api_row = api_data_map[name]
                     new_row['Injury'] = api_row.get('Injury', '')
                     api_boost = api_row.get('Boost', 0.0)
                     old_boost = row.get('Boost', 0.0)
+                    
+                    # Only update boost if API has something valid (and not 0.0 from started game)
                     if api_boost > 0.0 and api_boost != old_boost:
                          new_row['Boost'] = api_boost
                 
@@ -479,6 +505,7 @@ if fetch_btn:
             else:
                 updated_rows.append(row.to_dict())
                 
+        # 2. Add New Players found in API
         for name, row in api_data_map.items():
             if name not in processed_names:
                 updated_rows.append(row)
@@ -520,7 +547,6 @@ if not df_boosts.empty:
     proceed = True
 
 if proceed:
-    # Filter boost data for the selected sport immediately
     df_boosts = standardize_boost_columns(df_boosts)
     sport_boosts = df_boosts[df_boosts['Sport'].str.upper() == selected_sport.upper()].copy()
 
