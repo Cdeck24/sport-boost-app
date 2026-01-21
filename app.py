@@ -151,6 +151,44 @@ def calculate_nba_custom_rating(row, mapping):
 
     return round(rating, 2)
 
+def calculate_cbb_custom_rating(row, mapping):
+    """Calculates CBB player rating based on specific efficiency weights."""
+    stats = {}
+    for key, col_name in mapping.items():
+        try:
+            val = float(row.get(col_name, 0.0))
+            if pd.isna(val): val = 0.0
+            stats[key] = val
+        except:
+            stats[key] = 0.0
+
+    rating = 0.0
+
+    # Derive Makes and Misses
+    two_pm = stats['fgm'] - stats['3pm']
+    missed_fg = stats['fga'] - stats['fgm']
+    missed_ft = stats['fta'] - stats['ftm']
+
+    # Scoring Weights
+    rating += two_pm * 0.57
+    rating += stats['3pm'] * 0.77
+    rating += stats['ftm'] * 0.15
+
+    # Efficiency Penalties
+    rating -= missed_fg * 0.10
+    rating -= missed_ft * 0.05
+
+    # Stats Weights
+    rating += stats['reb'] * 0.14
+    rating += stats['ast'] * 0.18
+    rating += stats['stl'] * 0.25
+    rating += stats['blk'] * 0.29
+
+    # Turnover Penalty
+    rating -= stats['to'] * 0.24
+
+    return round(rating, 2)
+
 def fetch_letter(session, sport, date_str, letter):
     """Helper to fetch a single letter for a specific date."""
     url = (
@@ -167,11 +205,11 @@ def fetch_letter(session, sport, date_str, letter):
     return []
 
 def fetch_data_for_sport(sport, target_date):
-    """Fetches player data from API using STRICTLY the selected date."""
+    """Fetches player data from API using strictly current fantasy day."""
     session = requests.Session()
     sport_data = []
     
-    # Strict Date Strategy: Only check the selected date
+    target_date = get_fantasy_day()
     active_date_str = str(target_date)
 
     # Parallel Fetch Alphabet + Accented Characters
@@ -220,7 +258,7 @@ def fetch_data_for_sport(sport, target_date):
             except:
                 continue
             
-    return sport_data
+    return sport_data, active_date_str
 
 def load_projections_from_url(url):
     """Smart Fetcher: Tries to read URL as CSV first, then as HTML tables."""
@@ -325,7 +363,6 @@ def run_optimization(df, num_lineups=1):
 # --- Sidebar: Configuration ---
 with st.sidebar:
     st.header("1. Boost Data")
-    # Added NCAAM
     selected_sport = st.selectbox("Select League", ["nba", "nhl", "nfl", "ncaam"], index=0)
     
     # --- AUTO-CLEAR STALE PROJECTIONS ---
@@ -382,7 +419,7 @@ if fetch_btn:
     try:
         status_text.text(f"Fetching {selected_sport.upper()}...")
         fetch_date = get_fantasy_day()
-        data = fetch_data_for_sport(selected_sport, fetch_date)
+        data, fetch_date_str = fetch_data_for_sport(selected_sport, fetch_date)
         all_results.extend(data)
     except Exception as e:
         st.error(f"Error fetching data: {e}")
@@ -405,7 +442,7 @@ if fetch_btn:
                 name = row['Player Name']
                 processed_names.add(name)
                 new_row = row.to_dict()
-                new_row['Date'] = str(fetch_date) 
+                new_row['Date'] = str(fetch_date_str) 
                 
                 if name in api_data_map:
                     api_row = api_data_map[name]
@@ -501,6 +538,24 @@ if proceed:
                 points_col = 'Calculated_Rating'
                 st.success("✅ NBA Custom Efficiency Rating Applied")
         
+        if selected_sport == "ncaam":
+            cbb_cols_map = {
+                "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
+                "fga": find_col(df_proj.columns, ["fieldGoalsAttempted", "fga"]),
+                "3pm": find_col(df_proj.columns, ["threePointsMade", "3pm"]),
+                "ftm": find_col(df_proj.columns, ["freeThrowsMade", "ftm"]),
+                "fta": find_col(df_proj.columns, ["freeThrowsAttempted", "fta"]),
+                "reb": find_col(df_proj.columns, ["rebounds", "reb", "tot reb"]),
+                "ast": find_col(df_proj.columns, ["assists", "ast"]),
+                "stl": find_col(df_proj.columns, ["steals", "stl"]),
+                "blk": find_col(df_proj.columns, ["blocks", "blk"]),
+                "to":  find_col(df_proj.columns, ["turnovers", "to", "tov"])
+            }
+            if all(v is not None for v in cbb_cols_map.values()):
+                df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_cbb_custom_rating(row, cbb_cols_map), axis=1)
+                points_col = 'Calculated_Rating'
+                st.success("✅ CBB Custom Efficiency Rating Applied")
+        
         if selected_sport == "nhl" and not points_col:
             points_col = find_col(df_proj.columns, ["ppg_projection"])
 
@@ -589,7 +644,8 @@ if proceed:
                     value_cols = ['Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Optimization Score']
                     st.dataframe(
                         merged_df[value_cols].sort_values('Optimization Score', ascending=False).head(50), 
-                        use_container_width=True
+                        use_container_width=True,
+                        column_config={"Optimization Score": st.column_config.NumberColumn(format="%.2f")}
                     )
 
                 with tab3:
@@ -630,11 +686,8 @@ if proceed:
                                     )
                         else:
                             st.error("Could not generate lineup.")
-        else:
-             st.info(f"Projections loaded but columns not found for {selected_sport.upper()}.")
-
-    # --- CASE B: BOOSTS ONLY (No Projections) ---
     else:
+        # --- CASE B: BOOSTS ONLY (No Projections) ---
         if not sport_boosts.empty:
             st.subheader(f"Raw Boosts for {selected_sport.upper()} (No Projections Found)")
             st.write("Since no projections CSV is available, showing just the raw API boost data.")
