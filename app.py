@@ -396,7 +396,8 @@ with st.sidebar:
             st.caption(f"Source: {url[:40]}...")
             current_proj_url = url
         elif sport_key == "ncaam":
-            st.info("ℹ️ No auto-projections for NCAAM yet. Boosts will be shown raw.")
+             # CBB now has a URL configured, but we keep this check for safety
+             pass
         else:
             st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
     elif input_method == "Upload CSV":
@@ -520,6 +521,8 @@ if proceed:
             name_col = find_col(df_proj.columns, ["player", "name", "who"])
 
         points_col = None 
+        
+        # --- SPECIAL NBA RATING LOGIC ---
         if selected_sport == "nba":
             nba_cols_map = {
                 "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
@@ -538,6 +541,7 @@ if proceed:
                 points_col = 'Calculated_Rating'
                 st.success("✅ NBA Custom Efficiency Rating Applied")
         
+        # --- SPECIAL CBB RATING LOGIC ---
         if selected_sport == "ncaam":
             cbb_cols_map = {
                 "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
@@ -555,6 +559,7 @@ if proceed:
                 df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_cbb_custom_rating(row, cbb_cols_map), axis=1)
                 points_col = 'Calculated_Rating'
                 st.success("✅ CBB Custom Efficiency Rating Applied")
+
         
         if selected_sport == "nhl" and not points_col:
             points_col = find_col(df_proj.columns, ["ppg_projection"])
