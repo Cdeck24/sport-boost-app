@@ -187,7 +187,7 @@ def calculate_cbb_custom_rating(row, mapping):
 
     rating = 0.0
 
-    # Derive Makes and Misses
+    # Derive Makes and Misses (Post-Scaling)
     two_pm = stats['fgm'] - stats['3pm']
     missed_fg = stats['fga'] - stats['fgm']
     missed_ft = stats['fta'] - stats['ftm']
@@ -342,6 +342,7 @@ def run_optimization(df, num_lineups=1):
     if len(df) < NUM_SLOTS:
         return None
 
+    # Sort by Optimization Score
     df = df.sort_values('Optimization Score', ascending=False)
     df = df.drop_duplicates(subset=['Player Name'], keep='first').reset_index(drop=True)
     
@@ -413,6 +414,7 @@ with st.sidebar:
     st.header("1. Boost Data")
     selected_sport = st.selectbox("Select League", ["nba", "nhl", "nfl", "ncaam"], index=0)
     
+    # --- AUTO-CLEAR STALE PROJECTIONS ---
     if 'current_sport' not in st.session_state:
         st.session_state.current_sport = selected_sport
     
@@ -604,37 +606,40 @@ if proceed:
             other_cols = [c for c in df_proj.columns if c != proj_min_col]
             avg_min_col = find_col(other_cols, ["avg min", "minutes", "min", "mpg"])
 
-            cbb_cols_map = {
-                "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
-                "fga": find_col(df_proj.columns, ["fieldGoalsAttempted", "fga"]),
-                "3pm": find_col(df_proj.columns, ["threePointsMade", "3pm", "3pt"]),
-                "ftm": find_col(df_proj.columns, ["freeThrowsMade", "ftm"]),
-                "fta": find_col(df_proj.columns, ["freeThrowsAttempted", "fta"]),
-                "reb": find_col(df_proj.columns, ["rebounds", "reb", "tot reb"]),
-                "ast": find_col(df_proj.columns, ["assists", "ast"]),
-                "stl": find_col(df_proj.columns, ["steals", "stl"]),
-                "blk": find_col(df_proj.columns, ["blocks", "blk"]),
-                "to":  find_col(df_proj.columns, ["turnovers", "to", "tov"]),
-                "proj_min": proj_min_col,
-                "avg_min": avg_min_col
-            }
+            # Use standard FPTS for now per user request while fixing formula
+            # cbb_cols_map = {
+            #     "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
+            #     "fga": find_col(df_proj.columns, ["fieldGoalsAttempted", "fga"]),
+            #     "3pm": find_col(df_proj.columns, ["threePointsMade", "3pm", "3pt"]),
+            #     "ftm": find_col(df_proj.columns, ["freeThrowsMade", "ftm"]),
+            #     "fta": find_col(df_proj.columns, ["freeThrowsAttempted", "fta"]),
+            #     "reb": find_col(df_proj.columns, ["rebounds", "reb", "tot reb"]),
+            #     "ast": find_col(df_proj.columns, ["assists", "ast"]),
+            #     "stl": find_col(df_proj.columns, ["steals", "stl"]),
+            #     "blk": find_col(df_proj.columns, ["blocks", "blk"]),
+            #     "to":  find_col(df_proj.columns, ["turnovers", "to", "tov"]),
+            #     "proj_min": proj_min_col,
+            #     "avg_min": avg_min_col
+            # }
             
-            stat_keys_check = ['fgm', 'fga', '3pm', 'ftm', 'fta', 'reb', 'ast', 'stl', 'blk', 'to']
-            missing_keys = [k for k in stat_keys_check if cbb_cols_map[k] is None]
+            # stat_keys_check = ['fgm', 'fga', '3pm', 'ftm', 'fta', 'reb', 'ast', 'stl', 'blk', 'to']
+            # missing_keys = [k for k in stat_keys_check if cbb_cols_map[k] is None]
             
-            if not missing_keys:
-                df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_cbb_custom_rating(row, cbb_cols_map), axis=1)
-                points_col = 'Calculated_Rating'
-                st.success("✅ CBB Custom Efficiency Rating Applied (Scaled by Minutes)")
+            # if not missing_keys:
+            #     df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_cbb_custom_rating(row, cbb_cols_map), axis=1)
+            #     points_col = 'Calculated_Rating'
+            #     st.success("✅ CBB Custom Efficiency Rating Applied (Scaled by Minutes)")
+            # else:
+            #     st.warning(f"⚠️ Using Standard Fantasy Points for CBB (Missing stats: {', '.join(missing_keys)})")
+            
+            st.info("ℹ️ Using Standard Fantasy Points for CBB optimization (Formula disabled temporarily).")
                 
-                # --- NEW: Filter by Projected Minutes if column found ---
-                if proj_min_col and min_proj_min > 0:
-                    df_proj[proj_min_col] = pd.to_numeric(df_proj[proj_min_col], errors='coerce').fillna(0)
-                    initial_cbb_count = len(df_proj)
-                    df_proj = df_proj[df_proj[proj_min_col] >= min_proj_min]
-                    st.info(f"🏀 Filtered out {initial_cbb_count - len(df_proj)} players with < {min_proj_min} min.")
-            else:
-                st.error(f"❌ CBB Custom Rating Failed. Missing columns for: {', '.join(missing_keys)}")
+            # --- NEW: Filter by Projected Minutes if column found ---
+            if proj_min_col and min_proj_min > 0:
+                df_proj[proj_min_col] = pd.to_numeric(df_proj[proj_min_col], errors='coerce').fillna(0)
+                initial_cbb_count = len(df_proj)
+                df_proj = df_proj[df_proj[proj_min_col] >= min_proj_min]
+                st.info(f"🏀 Filtered out {initial_cbb_count - len(df_proj)} players with < {min_proj_min} min.")
 
         if selected_sport == "nhl" and not points_col:
             points_col = find_col(df_proj.columns, ["ppg_projection"])
@@ -717,7 +722,6 @@ if proceed:
                 
                 with tab1:
                     cols = ['Sport', 'Slate', 'Game', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Optimization Score']
-                    # Add Proj Min to view if it exists (for CBB debug)
                     if selected_sport == 'ncaam' and 'proj_min_col' in locals() and proj_min_col:
                          cols.append(proj_min_col)
                     cols = [c for c in cols if c in merged_df.columns]
