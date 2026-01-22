@@ -152,9 +152,14 @@ def calculate_nba_custom_rating(row, mapping):
     return round(rating, 2)
 
 def calculate_cbb_custom_rating(row, mapping):
-    """Calculates CBB player rating based on specific efficiency weights."""
+    """Calculates CBB player rating based on specific efficiency weights and minute scaling."""
     stats = {}
-    for key, col_name in mapping.items():
+    
+    # Stat keys expected in mapping
+    stat_keys = ['fgm', 'fga', '3pm', 'ftm', 'fta', 'reb', 'ast', 'stl', 'blk', 'to']
+    
+    for key in stat_keys:
+        col_name = mapping.get(key)
         try:
             val = float(row.get(col_name, 0.0))
             if pd.isna(val): val = 0.0
@@ -162,9 +167,28 @@ def calculate_cbb_custom_rating(row, mapping):
         except:
             stats[key] = 0.0
 
+    # --- Scaling Logic ---
+    scaling_factor = 1.0
+    col_proj = mapping.get('proj_min')
+    col_avg = mapping.get('avg_min')
+    
+    if col_proj and col_avg:
+        try:
+            p_min = float(row.get(col_proj, 0))
+            a_min = float(row.get(col_avg, 0))
+            if a_min > 0:
+                scaling_factor = p_min / a_min
+        except:
+            pass # Keep 1.0 on error
+            
+    # Apply Scaling Factor to all counting stats
+    if scaling_factor != 1.0:
+        for k in stats:
+            stats[k] = stats[k] * scaling_factor
+
     rating = 0.0
 
-    # Derive Makes and Misses
+    # Derive Makes and Misses (Post-Scaling)
     two_pm = stats['fgm'] - stats['3pm']
     missed_fg = stats['fga'] - stats['fgm']
     missed_ft = stats['fta'] - stats['ftm']
@@ -204,53 +228,44 @@ def fetch_letter(session, sport, date_str, letter):
         pass
     return []
 
-def fetch_data_for_sport(sport, base_date):
-    """Fetches player data from API, checking Yesterday, Today, and Tomorrow."""
+def fetch_data_for_sport(sport, target_date):
+    """Fetches player data from API using strictly current fantasy day."""
     session = requests.Session()
     sport_data = []
     
-    # SCAN STRATEGY: Check YESTERDAY, TODAY, and TOMORROW
-    # This covers all potential server timezone mismatches.
-    check_dates = [
-        base_date - datetime.timedelta(days=1),
-        base_date,
-        base_date + datetime.timedelta(days=1)
-    ]
-    
-    # For NFL, stick to the wider net if requested, but user asked for strictness recently
-    # keeping the small window for daily sports like NBA/NHL/CBB
+    # Strict Date Strategy: Only check the selected date (plus next day to be safe for late/early games)
+    target_dates = [target_date, target_date + datetime.timedelta(days=1)]
     if sport.lower() == 'nfl':
-        check_dates = [base_date + datetime.timedelta(days=i) for i in range(7)]
+        # Don't look ahead 7 days for NFL if we want strict control, but users usually want full week
+        # Keeping it strict to selection for now based on recent feedback
+        target_dates = [target_date]
 
-    # 1. PROBE to find valid dates (using 'a' as a sample query)
+    # Probe Dates
     valid_dates = []
-    for d in check_dates:
+    for d in target_dates:
         d_str = str(d)
         probe_url = f"https://api.real.vg/players/sport/{sport}/search?day={d_str}&includeNoOneOption=false&query=a&searchType=ratingLineup"
         try:
             r = session.get(probe_url, timeout=3)
-            # If we get ANY players back, assume this is a valid slate day
             if r.status_code == 200 and r.json().get("players"):
                 valid_dates.append(d_str)
         except:
             pass
             
-    # Fallback to selected date if nothing found
     if not valid_dates:
-        valid_dates = [str(base_date)]
-    
-    # 2. FETCH ALL DATA from valid dates
+        valid_dates = [str(target_date)]
+
+    # Parallel Fetch Alphabet + Accented Characters
     letters = list(string.ascii_uppercase) + ['Š', 'Ć', 'Č', 'Ž', 'Đ', 'Ö', 'Ä', 'Ü', 'Å', 'Ø']
     
-    # Use ThreadPool to fetch all combos of (Date, Letter)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         future_to_req = {}
         for d_str in valid_dates:
             for letter in letters:
                 future_to_req[executor.submit(fetch_letter, session, sport, d_str, letter)] = d_str
         
         for future in concurrent.futures.as_completed(future_to_req):
-            date_found = future_to_req[future]
+            active_date_str = future_to_req[future]
             try:
                 players = future.result()
                 if not players: continue
@@ -284,13 +299,13 @@ def fetch_data_for_sport(sport, base_date):
                         "Player Name": full_name,
                         "Position": position,
                         "Boost": boost_value,
-                        "Date": date_found, # Store the actual API date found
+                        "Date": active_date_str,
                         "Injury": injury_status
                     })
             except:
                 continue
             
-    return sport_data, valid_dates[-1] if valid_dates else str(base_date)
+    return sport_data, valid_dates[0] if valid_dates else str(target_date)
 
 def load_projections_from_url(url):
     """Smart Fetcher: Tries to read URL as CSV first, then as HTML tables."""
@@ -401,6 +416,7 @@ with st.sidebar:
     if 'current_sport' not in st.session_state:
         st.session_state.current_sport = selected_sport
     
+    # If the user switched sport, clear the old projection dataframe
     if st.session_state.current_sport != selected_sport:
         st.session_state.proj_df = None
         st.session_state.current_sport = selected_sport
@@ -450,10 +466,8 @@ if fetch_btn:
     status_text = st.empty()
     try:
         status_text.text(f"Fetching {selected_sport.upper()}...")
-        # Get "fantasy day" (US time)
-        base_fetch_date = get_fantasy_day()
-        # Fetch multi-day scan
-        data, latest_fetch_date = fetch_data_for_sport(selected_sport, base_fetch_date)
+        fetch_date = get_fantasy_day()
+        data, fetch_date_str = fetch_data_for_sport(selected_sport, fetch_date)
         all_results.extend(data)
     except Exception as e:
         st.error(f"Error fetching data: {e}")
@@ -462,17 +476,7 @@ if fetch_btn:
     progress_bar.empty()
     
     if all_results:
-        # Convert list to DF immediately to handle duplicates
-        raw_df = pd.DataFrame(all_results)
-        
-        # Sort by Date descending to keep the latest info for duplicates
-        raw_df = raw_df.sort_values('Date', ascending=False)
-        
-        # Drop duplicates, keeping the newest entry for each player
-        raw_df = raw_df.drop_duplicates(subset=['Player Name'], keep='first')
-        
-        api_data_map = {row['Player Name']: row.to_dict() for _, row in raw_df.iterrows()}
-        
+        api_data_map = {row['Player Name']: row for row in all_results}
         current_df = boost_store.get()
         if current_df.empty:
              current_df = pd.DataFrame(columns=['Sport', 'Player Name', 'Position', 'Boost', 'Date', 'Injury'])
@@ -481,23 +485,18 @@ if fetch_btn:
         updated_rows = []
         processed_names = set()
         
-        # 1. Update Existing Players in Store
         for _, row in current_df.iterrows():
             if str(row.get('Sport', '')).upper() == selected_sport.upper():
                 name = row['Player Name']
                 processed_names.add(name)
                 new_row = row.to_dict()
-                
-                # Update date to latest scan date for consistency
-                new_row['Date'] = str(latest_fetch_date)
+                new_row['Date'] = str(fetch_date_str) 
                 
                 if name in api_data_map:
                     api_row = api_data_map[name]
                     new_row['Injury'] = api_row.get('Injury', '')
                     api_boost = api_row.get('Boost', 0.0)
                     old_boost = row.get('Boost', 0.0)
-                    
-                    # Only update boost if API has something valid (and not 0.0 from started game)
                     if api_boost > 0.0 and api_boost != old_boost:
                          new_row['Boost'] = api_boost
                 
@@ -505,7 +504,6 @@ if fetch_btn:
             else:
                 updated_rows.append(row.to_dict())
                 
-        # 2. Add New Players found in API
         for name, row in api_data_map.items():
             if name not in processed_names:
                 updated_rows.append(row)
@@ -547,6 +545,7 @@ if not df_boosts.empty:
     proceed = True
 
 if proceed:
+    # Filter boost data for the selected sport immediately
     df_boosts = standardize_boost_columns(df_boosts)
     sport_boosts = df_boosts[df_boosts['Sport'].str.upper() == selected_sport.upper()].copy()
 
@@ -591,6 +590,12 @@ if proceed:
         
         # --- SPECIAL CBB RATING LOGIC ---
         if selected_sport == "ncaam":
+            # Add minute columns to map for scaling
+            proj_min_col = find_col(df_proj.columns, ["proj min", "projected minutes", "proj_min"])
+            # Ensure "min" doesn't grab "proj min" by excluding it from list
+            other_cols = [c for c in df_proj.columns if c != proj_min_col]
+            avg_min_col = find_col(other_cols, ["avg min", "minutes", "min", "mpg"])
+
             cbb_cols_map = {
                 "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
                 "fga": find_col(df_proj.columns, ["fieldGoalsAttempted", "fga"]),
@@ -601,14 +606,19 @@ if proceed:
                 "ast": find_col(df_proj.columns, ["assists", "ast"]),
                 "stl": find_col(df_proj.columns, ["steals", "stl"]),
                 "blk": find_col(df_proj.columns, ["blocks", "blk"]),
-                "to":  find_col(df_proj.columns, ["turnovers", "to", "tov"])
+                "to":  find_col(df_proj.columns, ["turnovers", "to", "tov"]),
+                "proj_min": proj_min_col,
+                "avg_min": avg_min_col
             }
             
-            missing_keys = [k for k, v in cbb_cols_map.items() if v is None]
+            # Check for required stats (ignoring mins, as they just scale 1.0 if missing)
+            stat_keys_check = ['fgm', 'fga', '3pm', 'ftm', 'fta', 'reb', 'ast', 'stl', 'blk', 'to']
+            missing_keys = [k for k in stat_keys_check if cbb_cols_map[k] is None]
+            
             if not missing_keys:
                 df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_cbb_custom_rating(row, cbb_cols_map), axis=1)
                 points_col = 'Calculated_Rating'
-                st.success("✅ CBB Custom Efficiency Rating Applied")
+                st.success("✅ CBB Custom Efficiency Rating Applied (Scaled by Minutes)")
             else:
                 st.error(f"❌ CBB Custom Rating Failed. Missing columns for: {', '.join(missing_keys)}")
 
