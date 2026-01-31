@@ -14,7 +14,7 @@ SPORT_PROJECTION_URLS = {
     "nba": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=0&single=true&output=csv", 
     "nfl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1180552482&single=true&output=csv",
     "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv",
-    "ncaam": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=763117256&single=true&output=csv"
+    "ncaam": "" # Empty for now to force "Boosts Only" display
 }
 # ---------------------------------------------------
 
@@ -154,11 +154,7 @@ def calculate_nba_custom_rating(row, mapping):
 def calculate_cbb_custom_rating(row, mapping):
     """Calculates CBB player rating based on specific efficiency weights."""
     stats = {}
-    
-    stat_keys = ['fgm', 'fga', '3pm', 'ftm', 'fta', 'reb', 'ast', 'stl', 'blk', 'to']
-    
-    for key in stat_keys:
-        col_name = mapping.get(key)
+    for key, col_name in mapping.items():
         try:
             val = float(row.get(col_name, 0.0))
             if pd.isna(val): val = 0.0
@@ -187,7 +183,7 @@ def calculate_cbb_custom_rating(row, mapping):
 
     rating = 0.0
 
-    # Derive Makes and Misses (Post-Scaling)
+    # Derive Makes and Misses
     two_pm = stats['fgm'] - stats['3pm']
     missed_fg = stats['fga'] - stats['fgm']
     missed_ft = stats['fta'] - stats['ftm']
@@ -418,6 +414,7 @@ with st.sidebar:
     if 'current_sport' not in st.session_state:
         st.session_state.current_sport = selected_sport
     
+    # If the user switched sport, clear the old projection dataframe
     if st.session_state.current_sport != selected_sport:
         st.session_state.proj_df = None
         st.session_state.current_sport = selected_sport
@@ -444,8 +441,7 @@ with st.sidebar:
             st.caption(f"Source: {url[:40]}...")
             current_proj_url = url
         elif sport_key == "ncaam":
-             # CBB now has a URL configured, but we keep this check for safety
-             pass
+             st.info("ℹ️ No auto-projections for NCAAM. Fetching boosts only.")
         else:
             st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
     elif input_method == "Upload CSV":
@@ -559,12 +555,15 @@ if not df_boosts.empty:
     proceed = True
 
 if proceed:
+    # Filter boost data for the selected sport immediately
     df_boosts = standardize_boost_columns(df_boosts)
     sport_boosts = df_boosts[df_boosts['Sport'].str.upper() == selected_sport.upper()].copy()
 
-    if df_proj_copy is not None:
+    # --- CASE A: HAVE PROJECTIONS ---
+    if df_proj_copy is not None and not df_proj_copy.empty:
         df_proj = df_proj_copy.copy()
         
+        # Standardize Projection Cols
         if isinstance(df_proj.columns, pd.MultiIndex):
             df_proj.columns = [' '.join(col).strip() for col in df_proj.columns.values]
         df_proj.columns = [str(c).strip() for c in df_proj.columns]
@@ -606,40 +605,37 @@ if proceed:
             other_cols = [c for c in df_proj.columns if c != proj_min_col]
             avg_min_col = find_col(other_cols, ["avg min", "minutes", "min", "mpg"])
 
-            # Use standard FPTS for now per user request while fixing formula
-            # cbb_cols_map = {
-            #     "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
-            #     "fga": find_col(df_proj.columns, ["fieldGoalsAttempted", "fga"]),
-            #     "3pm": find_col(df_proj.columns, ["threePointsMade", "3pm", "3pt"]),
-            #     "ftm": find_col(df_proj.columns, ["freeThrowsMade", "ftm"]),
-            #     "fta": find_col(df_proj.columns, ["freeThrowsAttempted", "fta"]),
-            #     "reb": find_col(df_proj.columns, ["rebounds", "reb", "tot reb"]),
-            #     "ast": find_col(df_proj.columns, ["assists", "ast"]),
-            #     "stl": find_col(df_proj.columns, ["steals", "stl"]),
-            #     "blk": find_col(df_proj.columns, ["blocks", "blk"]),
-            #     "to":  find_col(df_proj.columns, ["turnovers", "to", "tov"]),
-            #     "proj_min": proj_min_col,
-            #     "avg_min": avg_min_col
-            # }
+            cbb_cols_map = {
+                "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
+                "fga": find_col(df_proj.columns, ["fieldGoalsAttempted", "fga"]),
+                "3pm": find_col(df_proj.columns, ["threePointsMade", "3pm", "3pt"]),
+                "ftm": find_col(df_proj.columns, ["freeThrowsMade", "ftm"]),
+                "fta": find_col(df_proj.columns, ["freeThrowsAttempted", "fta"]),
+                "reb": find_col(df_proj.columns, ["rebounds", "reb", "tot reb"]),
+                "ast": find_col(df_proj.columns, ["assists", "ast"]),
+                "stl": find_col(df_proj.columns, ["steals", "stl"]),
+                "blk": find_col(df_proj.columns, ["blocks", "blk"]),
+                "to":  find_col(df_proj.columns, ["turnovers", "to", "tov"]),
+                "proj_min": proj_min_col,
+                "avg_min": avg_min_col
+            }
             
-            # stat_keys_check = ['fgm', 'fga', '3pm', 'ftm', 'fta', 'reb', 'ast', 'stl', 'blk', 'to']
-            # missing_keys = [k for k in stat_keys_check if cbb_cols_map[k] is None]
+            stat_keys_check = ['fgm', 'fga', '3pm', 'ftm', 'fta', 'reb', 'ast', 'stl', 'blk', 'to']
+            missing_keys = [k for k in stat_keys_check if cbb_cols_map[k] is None]
             
-            # if not missing_keys:
-            #     df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_cbb_custom_rating(row, cbb_cols_map), axis=1)
-            #     points_col = 'Calculated_Rating'
-            #     st.success("✅ CBB Custom Efficiency Rating Applied (Scaled by Minutes)")
-            # else:
-            #     st.warning(f"⚠️ Using Standard Fantasy Points for CBB (Missing stats: {', '.join(missing_keys)})")
-            
-            st.info("ℹ️ Using Standard Fantasy Points for CBB optimization (Formula disabled temporarily).")
+            if not missing_keys:
+                df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_cbb_custom_rating(row, cbb_cols_map), axis=1)
+                points_col = 'Calculated_Rating'
+                st.success("✅ CBB Custom Efficiency Rating Applied (Scaled by Minutes)")
                 
-            # --- NEW: Filter by Projected Minutes if column found ---
-            if proj_min_col and min_proj_min > 0:
-                df_proj[proj_min_col] = pd.to_numeric(df_proj[proj_min_col], errors='coerce').fillna(0)
-                initial_cbb_count = len(df_proj)
-                df_proj = df_proj[df_proj[proj_min_col] >= min_proj_min]
-                st.info(f"🏀 Filtered out {initial_cbb_count - len(df_proj)} players with < {min_proj_min} min.")
+                # --- NEW: Filter by Projected Minutes if column found ---
+                if proj_min_col and min_proj_min > 0:
+                    df_proj[proj_min_col] = pd.to_numeric(df_proj[proj_min_col], errors='coerce').fillna(0)
+                    initial_cbb_count = len(df_proj)
+                    df_proj = df_proj[df_proj[proj_min_col] >= min_proj_min]
+                    st.info(f"🏀 Filtered out {initial_cbb_count - len(df_proj)} players with < {min_proj_min} min.")
+            else:
+                 pass # Fallback to fpts or skip custom rating
 
         if selected_sport == "nhl" and not points_col:
             points_col = find_col(df_proj.columns, ["ppg_projection"])
@@ -791,8 +787,11 @@ if proceed:
                                     )
                         else:
                             st.error("Could not generate lineup.")
+        else:
+             st.info(f"Projections loaded but columns not found for {selected_sport.upper()}.")
+
+    # --- CASE B: BOOSTS ONLY (No Projections) ---
     else:
-        # --- CASE B: BOOSTS ONLY (No Projections) ---
         if not sport_boosts.empty:
             st.subheader(f"Raw Boosts for {selected_sport.upper()} (No Projections Found)")
             st.write("Since no projections CSV is available, showing just the raw API boost data.")
