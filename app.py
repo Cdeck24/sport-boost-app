@@ -14,7 +14,7 @@ SPORT_PROJECTION_URLS = {
     "nba": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=0&single=true&output=csv", 
     "nfl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1180552482&single=true&output=csv",
     "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv",
-    "ncaam": "" # Empty for now to force "Boosts Only" display
+    "ncaam": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=763117256&single=true&output=csv"
 }
 # ---------------------------------------------------
 
@@ -224,46 +224,21 @@ def fetch_letter(session, sport, date_str, letter):
     return []
 
 def fetch_data_for_sport(sport, target_date):
-    """Fetches player data from API, checking Yesterday, Today, and Tomorrow."""
+    """Fetches player data from API using STRICTLY the selected date."""
     session = requests.Session()
     sport_data = []
     
-    # SCAN STRATEGY: Check YESTERDAY, TODAY, and TOMORROW
-    check_dates = [
-        target_date - datetime.timedelta(days=1),
-        target_date,
-        target_date + datetime.timedelta(days=1)
-    ]
-    
-    if sport.lower() == 'nfl':
-        check_dates = [target_date + datetime.timedelta(days=i) for i in range(7)]
+    # Strict Date Strategy: Only check the specific date requested
+    # We removed the scanning logic to prevent "Tomorrow's" date from overwriting "Today's"
+    active_date_str = str(target_date)
 
-    # 1. PROBE to find valid dates
-    valid_dates = []
-    for d in check_dates:
-        d_str = str(d)
-        probe_url = f"https://api.real.vg/players/sport/{sport}/search?day={d_str}&includeNoOneOption=false&query=a&searchType=ratingLineup"
-        try:
-            r = session.get(probe_url, timeout=3)
-            if r.status_code == 200 and r.json().get("players"):
-                valid_dates.append(d_str)
-        except:
-            pass
-            
-    if not valid_dates:
-        valid_dates = [str(target_date)]
-    
-    # 2. FETCH ALL DATA from valid dates
+    # Parallel Fetch Alphabet + Accented Characters
     letters = list(string.ascii_uppercase) + ['Š', 'Ć', 'Č', 'Ž', 'Đ', 'Ö', 'Ä', 'Ü', 'Å', 'Ø']
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-        future_to_req = {}
-        for d_str in valid_dates:
-            for letter in letters:
-                future_to_req[executor.submit(fetch_letter, session, sport, d_str, letter)] = d_str
+        future_to_req = {executor.submit(fetch_letter, session, sport, active_date_str, letter): letter for letter in letters}
         
         for future in concurrent.futures.as_completed(future_to_req):
-            date_found = future_to_req[future]
             try:
                 players = future.result()
                 if not players: continue
@@ -297,13 +272,13 @@ def fetch_data_for_sport(sport, target_date):
                         "Player Name": full_name,
                         "Position": position,
                         "Boost": boost_value,
-                        "Date": date_found,
+                        "Date": active_date_str,
                         "Injury": injury_status
                     })
             except:
                 continue
             
-    return sport_data, valid_dates[-1] if valid_dates else str(target_date)
+    return sport_data, active_date_str
 
 def load_projections_from_url(url):
     """Smart Fetcher: Tries to read URL as CSV first, then as HTML tables."""
@@ -410,11 +385,13 @@ with st.sidebar:
     st.header("1. Boost Data")
     selected_sport = st.selectbox("Select League", ["nba", "nhl", "nfl", "ncaam"], index=0)
     
+    # NEW: Date Picker for explicit control
+    target_date = st.date_input("Game Date", get_fantasy_day())
+    
     # --- AUTO-CLEAR STALE PROJECTIONS ---
     if 'current_sport' not in st.session_state:
         st.session_state.current_sport = selected_sport
     
-    # If the user switched sport, clear the old projection dataframe
     if st.session_state.current_sport != selected_sport:
         st.session_state.proj_df = None
         st.session_state.current_sport = selected_sport
@@ -441,7 +418,8 @@ with st.sidebar:
             st.caption(f"Source: {url[:40]}...")
             current_proj_url = url
         elif sport_key == "ncaam":
-             st.info("ℹ️ No auto-projections for NCAAM. Fetching boosts only.")
+             # CBB now has a URL configured, but we keep this check for safety
+             pass
         else:
             st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
     elif input_method == "Upload CSV":
@@ -470,8 +448,8 @@ if fetch_btn:
     status_text = st.empty()
     try:
         status_text.text(f"Fetching {selected_sport.upper()}...")
-        fetch_date = get_fantasy_day()
-        data, fetch_date_str = fetch_data_for_sport(selected_sport, fetch_date)
+        # Now passing target_date to the fetch function
+        data, fetch_date_str = fetch_data_for_sport(selected_sport, target_date)
         all_results.extend(data)
     except Exception as e:
         st.error(f"Error fetching data: {e}")
@@ -787,11 +765,8 @@ if proceed:
                                     )
                         else:
                             st.error("Could not generate lineup.")
-        else:
-             st.info(f"Projections loaded but columns not found for {selected_sport.upper()}.")
-
-    # --- CASE B: BOOSTS ONLY (No Projections) ---
     else:
+        # --- CASE B: BOOSTS ONLY (No Projections) ---
         if not sport_boosts.empty:
             st.subheader(f"Raw Boosts for {selected_sport.upper()} (No Projections Found)")
             st.write("Since no projections CSV is available, showing just the raw API boost data.")
