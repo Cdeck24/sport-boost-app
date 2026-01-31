@@ -154,11 +154,7 @@ def calculate_nba_custom_rating(row, mapping):
 def calculate_cbb_custom_rating(row, mapping):
     """Calculates CBB player rating based on specific efficiency weights."""
     stats = {}
-    
-    stat_keys = ['fgm', 'fga', '3pm', 'ftm', 'fta', 'reb', 'ast', 'stl', 'blk', 'to']
-    
-    for key in stat_keys:
-        col_name = mapping.get(key)
+    for key, col_name in mapping.items():
         try:
             val = float(row.get(col_name, 0.0))
             if pd.isna(val): val = 0.0
@@ -228,13 +224,11 @@ def fetch_letter(session, sport, date_str, letter):
     return []
 
 def fetch_data_for_sport(sport, target_date):
-    """Fetches player data from API using strictly current fantasy day."""
+    """Fetches player data from API using STRICTLY the selected date."""
     session = requests.Session()
     sport_data = []
     
-    # --- STRICT DATE STRATEGY ---
-    # Only use the date selected by the user (or today's date).
-    # Removed "check_dates" scan to prevent future dates from overwriting today's data.
+    # Strict Date Strategy: Only check the specific date requested
     active_date_str = str(target_date)
     valid_dates = [active_date_str]
 
