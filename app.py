@@ -13,8 +13,7 @@ import unicodedata
 SPORT_PROJECTION_URLS = {
     "nba": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=0&single=true&output=csv", 
     "nfl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1180552482&single=true&output=csv",
-    "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv",
-    "ncaam": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=763117256&single=true&output=csv"
+    "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv"
 }
 # ---------------------------------------------------
 
@@ -151,63 +150,6 @@ def calculate_nba_custom_rating(row, mapping):
 
     return round(rating, 2)
 
-def calculate_cbb_custom_rating(row, mapping):
-    """Calculates CBB player rating based on specific efficiency weights."""
-    stats = {}
-    for key, col_name in mapping.items():
-        try:
-            val = float(row.get(col_name, 0.0))
-            if pd.isna(val): val = 0.0
-            stats[key] = val
-        except:
-            stats[key] = 0.0
-
-    # --- Scaling Logic ---
-    scaling_factor = 1.0
-    col_proj = mapping.get('proj_min')
-    col_avg = mapping.get('avg_min')
-    
-    if col_proj and col_avg:
-        try:
-            p_min = float(row.get(col_proj, 0))
-            a_min = float(row.get(col_avg, 0))
-            if a_min > 0:
-                scaling_factor = p_min / a_min
-        except:
-            pass # Keep 1.0 on error
-            
-    # Apply Scaling Factor to all counting stats
-    if scaling_factor != 1.0:
-        for k in stats:
-            stats[k] = stats[k] * scaling_factor
-
-    rating = 0.0
-
-    # Derive Makes and Misses
-    two_pm = stats['fgm'] - stats['3pm']
-    missed_fg = stats['fga'] - stats['fgm']
-    missed_ft = stats['fta'] - stats['ftm']
-
-    # Scoring Weights
-    rating += two_pm * 0.57
-    rating += stats['3pm'] * 0.77
-    rating += stats['ftm'] * 0.15
-
-    # Efficiency Penalties
-    rating -= missed_fg * 0.10
-    rating -= missed_ft * 0.05
-
-    # Stats Weights
-    rating += stats['reb'] * 0.14
-    rating += stats['ast'] * 0.18
-    rating += stats['stl'] * 0.25
-    rating += stats['blk'] * 0.29
-
-    # Turnover Penalty
-    rating -= stats['to'] * 0.24
-
-    return round(rating, 2)
-
 def fetch_letter(session, sport, date_str, letter):
     """Helper to fetch a single letter for a specific date."""
     url = (
@@ -230,19 +172,14 @@ def fetch_data_for_sport(sport, target_date):
     
     # Strict Date Strategy: Only check the specific date requested
     active_date_str = str(target_date)
-    valid_dates = [active_date_str]
 
     # Parallel Fetch Alphabet + Accented Characters
     letters = list(string.ascii_uppercase) + ['Š', 'Ć', 'Č', 'Ž', 'Đ', 'Ö', 'Ä', 'Ü', 'Å', 'Ø']
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-        future_to_req = {}
-        for d_str in valid_dates:
-            for letter in letters:
-                future_to_req[executor.submit(fetch_letter, session, sport, d_str, letter)] = d_str
+        future_to_req = {executor.submit(fetch_letter, session, sport, active_date_str, letter): letter for letter in letters}
         
         for future in concurrent.futures.as_completed(future_to_req):
-            date_found = future_to_req[future]
             try:
                 players = future.result()
                 if not players: continue
@@ -276,13 +213,13 @@ def fetch_data_for_sport(sport, target_date):
                         "Player Name": full_name,
                         "Position": position,
                         "Boost": boost_value,
-                        "Date": date_found,
+                        "Date": active_date_str,
                         "Injury": injury_status
                     })
             except:
                 continue
             
-    return sport_data, valid_dates[-1]
+    return sport_data, active_date_str
 
 def load_projections_from_url(url):
     """Smart Fetcher: Tries to read URL as CSV first, then as HTML tables."""
@@ -387,15 +324,13 @@ def run_optimization(df, num_lineups=1):
 # --- Sidebar: Configuration ---
 with st.sidebar:
     st.header("1. Boost Data")
-    selected_sport = st.selectbox("Select League", ["nba", "nhl", "nfl", "ncaam"], index=0)
-    
-    # NEW: Date Picker for explicit control
-    target_date = st.date_input("Game Date", get_fantasy_day())
+    selected_sport = st.selectbox("Select League", ["nba", "nhl", "nfl"], index=0)
     
     # --- AUTO-CLEAR STALE PROJECTIONS ---
     if 'current_sport' not in st.session_state:
         st.session_state.current_sport = selected_sport
     
+    # If the user switched sport, clear the old projection dataframe
     if st.session_state.current_sport != selected_sport:
         st.session_state.proj_df = None
         st.session_state.current_sport = selected_sport
@@ -421,9 +356,6 @@ with st.sidebar:
             st.success(f"✅ URL Configured for {sport_key.upper()}")
             st.caption(f"Source: {url[:40]}...")
             current_proj_url = url
-        elif sport_key == "ncaam":
-             # CBB now has a URL configured, but we keep this check for safety
-             pass
         else:
             st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
     elif input_method == "Upload CSV":
@@ -435,13 +367,6 @@ with st.sidebar:
     wr_rb_bonus = 1.0
     qb_penalty = 1.0
     num_lineups = st.slider("Number of Lineups", 1, 10, 3)
-    
-    # NEW: CBB Minute Filter
-    min_proj_min = 0
-    if selected_sport == 'ncaam':
-        st.subheader("CBB Filters")
-        min_proj_min = st.slider("Min Projected Minutes", 0, 40, 5, help="Filter out players with very low projected minutes.")
-
 
 # --- Main Logic ---
 
@@ -452,8 +377,9 @@ if fetch_btn:
     status_text = st.empty()
     try:
         status_text.text(f"Fetching {selected_sport.upper()}...")
-        # Now passing target_date to the fetch function
-        data, fetch_date_str = fetch_data_for_sport(selected_sport, target_date)
+        # Automatically use today's date (US time)
+        fetch_date = get_fantasy_day()
+        data, fetch_date_str = fetch_data_for_sport(selected_sport, fetch_date)
         all_results.extend(data)
     except Exception as e:
         st.error(f"Error fetching data: {e}")
@@ -462,31 +388,33 @@ if fetch_btn:
     progress_bar.empty()
     
     if all_results:
-        # Convert list to DF immediately to handle duplicates
-        raw_df = pd.DataFrame(all_results)
-        raw_df = raw_df.sort_values('Date', ascending=False)
-        raw_df = raw_df.drop_duplicates(subset=['Player Name'], keep='first')
+        # Map of API results: Name -> Row
+        api_data_map = {row['Player Name']: row for row in all_results}
         
-        api_data_map = {row['Player Name']: row.to_dict() for _, row in raw_df.iterrows()}
-        
+        # Get current global state (creates empty DF if none exists)
         current_df = boost_store.get()
         if current_df.empty:
              current_df = pd.DataFrame(columns=['Sport', 'Player Name', 'Position', 'Boost', 'Date', 'Injury'])
+        
         current_df = standardize_boost_columns(current_df)
         
         updated_rows = []
         processed_names = set()
         
+        # 1. Update Existing Players in Store (Preserve old boosts if API = 0.0)
         for _, row in current_df.iterrows():
             if str(row.get('Sport', '')).upper() == selected_sport.upper():
                 name = row['Player Name']
                 processed_names.add(name)
+                
                 new_row = row.to_dict()
                 new_row['Date'] = str(fetch_date_str) 
                 
                 if name in api_data_map:
                     api_row = api_data_map[name]
                     new_row['Injury'] = api_row.get('Injury', '')
+                    
+                    # Update boost ONLY if API has valid new data > 0.0
                     api_boost = api_row.get('Boost', 0.0)
                     old_boost = row.get('Boost', 0.0)
                     if api_boost > 0.0 and api_boost != old_boost:
@@ -496,10 +424,12 @@ if fetch_btn:
             else:
                 updated_rows.append(row.to_dict())
                 
+        # 2. Add New Players found in API
         for name, row in api_data_map.items():
             if name not in processed_names:
                 updated_rows.append(row)
                 
+        # Update Global Store
         boost_store.update(pd.DataFrame(updated_rows))
         st.success(f"Fetched and Merged Data for {selected_sport.upper()}!")
     else:
@@ -579,45 +509,6 @@ if proceed:
                 df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_nba_custom_rating(row, nba_cols_map), axis=1)
                 points_col = 'Calculated_Rating'
                 st.success("✅ NBA Custom Efficiency Rating Applied")
-        
-        # --- SPECIAL CBB RATING LOGIC ---
-        if selected_sport == "ncaam":
-            # Add minute columns to map for scaling
-            proj_min_col = find_col(df_proj.columns, ["proj min", "projected minutes", "proj_min", "p_min", "projected"])
-            other_cols = [c for c in df_proj.columns if c != proj_min_col]
-            avg_min_col = find_col(other_cols, ["avg min", "minutes", "min", "mpg"])
-
-            cbb_cols_map = {
-                "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
-                "fga": find_col(df_proj.columns, ["fieldGoalsAttempted", "fga"]),
-                "3pm": find_col(df_proj.columns, ["threePointsMade", "3pm", "3pt"]),
-                "ftm": find_col(df_proj.columns, ["freeThrowsMade", "ftm"]),
-                "fta": find_col(df_proj.columns, ["freeThrowsAttempted", "fta"]),
-                "reb": find_col(df_proj.columns, ["rebounds", "reb", "tot reb"]),
-                "ast": find_col(df_proj.columns, ["assists", "ast"]),
-                "stl": find_col(df_proj.columns, ["steals", "stl"]),
-                "blk": find_col(df_proj.columns, ["blocks", "blk"]),
-                "to":  find_col(df_proj.columns, ["turnovers", "to", "tov"]),
-                "proj_min": proj_min_col,
-                "avg_min": avg_min_col
-            }
-            
-            stat_keys_check = ['fgm', 'fga', '3pm', 'ftm', 'fta', 'reb', 'ast', 'stl', 'blk', 'to']
-            missing_keys = [k for k in stat_keys_check if cbb_cols_map[k] is None]
-            
-            if not missing_keys:
-                df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_cbb_custom_rating(row, cbb_cols_map), axis=1)
-                points_col = 'Calculated_Rating'
-                st.success("✅ CBB Custom Efficiency Rating Applied (Scaled by Minutes)")
-                
-                # --- NEW: Filter by Projected Minutes if column found ---
-                if proj_min_col and min_proj_min > 0:
-                    df_proj[proj_min_col] = pd.to_numeric(df_proj[proj_min_col], errors='coerce').fillna(0)
-                    initial_cbb_count = len(df_proj)
-                    df_proj = df_proj[df_proj[proj_min_col] >= min_proj_min]
-                    st.info(f"🏀 Filtered out {initial_cbb_count - len(df_proj)} players with < {min_proj_min} min.")
-            else:
-                 pass # Fallback to fpts or skip custom rating
 
         if selected_sport == "nhl" and not points_col:
             points_col = find_col(df_proj.columns, ["ppg_projection"])
@@ -700,8 +591,6 @@ if proceed:
                 
                 with tab1:
                     cols = ['Sport', 'Slate', 'Game', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Optimization Score']
-                    if selected_sport == 'ncaam' and 'proj_min_col' in locals() and proj_min_col:
-                         cols.append(proj_min_col)
                     cols = [c for c in cols if c in merged_df.columns]
                     st.dataframe(merged_df[cols].sort_values('Optimization Score', ascending=False), use_container_width=True)
 
