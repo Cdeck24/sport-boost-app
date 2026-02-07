@@ -19,9 +19,9 @@ DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.
 DEFAULT_SEC_CH_UA = '"Chromium";v="125", "Not.A/Brand";v="24", "Google Chrome";v="125"'
 DEVICE_NAME = 'Chrome on Windows'
 # change this as well
-DEVICE_UUID = ''
+DEVICE_UUID = '0e497d76-7bd5-4cf5-b63c-f194d1d4cbcf'
 # you are going to find this yourself looks like fgOD12!sdg49!random-random-random , found in headers in inspect network
-REAL_AUTH_TOKEN = ''
+REAL_AUTH_TOKEN = 'xnr5VpW3!ApZk8L2E!4fe6e26f-949f-4936-ae3e-16384878932f'
 
 
 # auth functions
