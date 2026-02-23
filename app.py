@@ -177,9 +177,6 @@ def generate_request_token():
 token = generate_request_token()
 HEADERS = build_headers(token)
 
-
-
-
 # --- ⬇️ CONFIGURATION ⬇️ ---
 # PROJECTION SOURCES (Google Sheet Links)
 SPORT_PROJECTION_URLS = {
@@ -392,7 +389,6 @@ def fetch_letter(session, sport, date_str, letter):
         if r.status_code == 200:
             return r.json().get("players", [])
     except:
-        st.write("Passed")
         pass
     return []
 
@@ -402,7 +398,6 @@ def fetch_data_for_sport(sport, target_date):
     session.headers.update(HEADERS)
     sport_data = []
     
-    # Strict Date Strategy: Only check the specific date requested
     active_date_str = str(target_date)
 
     # Parallel Fetch Alphabet + Accented Characters
@@ -478,8 +473,11 @@ def load_projections_from_url(url):
     except Exception as e:
         return None, str(e)
 
-def run_optimization(df, num_lineups=1):
-    """Runs Assignment Problem solver."""
+def run_optimization(df, num_lineups=1, locked_players=None):
+    """Runs Assignment Problem solver with optional locked players."""
+    if locked_players is None:
+        locked_players = []
+        
     SLOT_ADDERS = [2.0, 1.8, 1.6, 1.4, 1.2]
     NUM_SLOTS = len(SLOT_ADDERS)
     
@@ -511,11 +509,22 @@ def run_optimization(df, num_lineups=1):
             
     prob += pulp.lpSum(obj_terms)
     
+    # Each slot gets exactly 1 player
     for j in slot_indices:
         prob += pulp.lpSum([x[i][j] for i in player_indices]) == 1
+        
+    # Link player selection to slot selections
     for i in player_indices:
         prob += pulp.lpSum([x[i][j] for j in slot_indices]) == y[i]
+        
+    # Exactly NUM_SLOTS players selected total
     prob += pulp.lpSum([y[i] for i in player_indices]) == NUM_SLOTS
+
+    # LOCK PLAYERS CONSTRAINT
+    if locked_players:
+        locked_indices = [i for i in player_indices if df.loc[i, "Player Name"] in locked_players]
+        for idx in locked_indices:
+            prob += y[idx] == 1
 
     generated_lineups = []
     for n in range(num_lineups):
@@ -548,6 +557,8 @@ def run_optimization(df, num_lineups=1):
                         })
             lineup_df = pd.DataFrame(lineup_data).sort_values(by="Slot")
             generated_lineups.append(lineup_df)
+            
+            # Ensure different lineups on subsequent loops
             prob += pulp.lpSum([y[i] for i in selected_player_indices]) <= NUM_SLOTS - 1
         else:
             break
@@ -601,7 +612,6 @@ with st.sidebar:
     qb_penalty = 1.0
     num_lineups = st.slider("Number of Lineups", 1, 10, 3)
     
-    # NEW: CBB Minute Filter
     min_proj_min = 0
     if selected_sport == 'ncaam':
         st.subheader("CBB Filters")
@@ -609,8 +619,6 @@ with st.sidebar:
 
 
 # --- Main Logic ---
-
-# 1. Fetch Live Logic (Merges into Global Store)
 if fetch_btn:
     all_results = []
     progress_bar = st.progress(0)
@@ -627,7 +635,6 @@ if fetch_btn:
     progress_bar.empty()
     
     if all_results:
-        # Convert list to DF immediately to handle duplicates
         raw_df = pd.DataFrame(all_results)
         raw_df = raw_df.sort_values('Date', ascending=False)
         raw_df = raw_df.drop_duplicates(subset=['Player Name'], keep='first')
@@ -702,7 +709,6 @@ if not df_boosts.empty:
     proceed = True
 
 if proceed:
-    # Filter boost data for the selected sport immediately
     df_boosts = standardize_boost_columns(df_boosts)
     sport_boosts = df_boosts[df_boosts['Sport'].str.upper() == selected_sport.upper()].copy()
 
@@ -710,7 +716,6 @@ if proceed:
     if df_proj_copy is not None and not df_proj_copy.empty:
         df_proj = df_proj_copy.copy()
         
-        # Standardize Projection Cols
         if isinstance(df_proj.columns, pd.MultiIndex):
             df_proj.columns = [' '.join(col).strip() for col in df_proj.columns.values]
         df_proj.columns = [str(c).strip() for c in df_proj.columns]
@@ -726,7 +731,6 @@ if proceed:
 
         points_col = None 
         
-        # --- SPECIAL NBA RATING LOGIC ---
         if selected_sport == "nba":
             nba_cols_map = {
                 "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
@@ -745,45 +749,6 @@ if proceed:
                 points_col = 'Calculated_Rating'
                 st.success("✅ NBA Custom Efficiency Rating Applied")
         
-        # --- SPECIAL CBB RATING LOGIC ---
-        if selected_sport == "ncaam":
-            # Add minute columns to map for scaling
-            proj_min_col = find_col(df_proj.columns, ["proj min", "projected minutes", "proj_min", "p_min", "projected"])
-            other_cols = [c for c in df_proj.columns if c != proj_min_col]
-            avg_min_col = find_col(other_cols, ["avg min", "minutes", "min", "mpg"])
-
-            cbb_cols_map = {
-                "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
-                "fga": find_col(df_proj.columns, ["fieldGoalsAttempted", "fga"]),
-                "3pm": find_col(df_proj.columns, ["threePointsMade", "3pm", "3pt"]),
-                "ftm": find_col(df_proj.columns, ["freeThrowsMade", "ftm"]),
-                "fta": find_col(df_proj.columns, ["freeThrowsAttempted", "fta"]),
-                "reb": find_col(df_proj.columns, ["rebounds", "reb", "tot reb"]),
-                "ast": find_col(df_proj.columns, ["assists", "ast"]),
-                "stl": find_col(df_proj.columns, ["steals", "stl"]),
-                "blk": find_col(df_proj.columns, ["blocks", "blk"]),
-                "to":  find_col(df_proj.columns, ["turnovers", "to", "tov"]),
-                "proj_min": proj_min_col,
-                "avg_min": avg_min_col
-            }
-            
-            stat_keys_check = ['fgm', 'fga', '3pm', 'ftm', 'fta', 'reb', 'ast', 'stl', 'blk', 'to']
-            missing_keys = [k for k in stat_keys_check if cbb_cols_map[k] is None]
-            
-            if not missing_keys:
-                df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_cbb_custom_rating(row, cbb_cols_map), axis=1)
-                points_col = 'Calculated_Rating'
-                st.success("✅ CBB Custom Efficiency Rating Applied (Scaled by Minutes)")
-                
-                # --- NEW: Filter by Projected Minutes if column found ---
-                if proj_min_col and min_proj_min > 0:
-                    df_proj[proj_min_col] = pd.to_numeric(df_proj[proj_min_col], errors='coerce').fillna(0)
-                    initial_cbb_count = len(df_proj)
-                    df_proj = df_proj[df_proj[proj_min_col] >= min_proj_min]
-                    st.info(f"🏀 Filtered out {initial_cbb_count - len(df_proj)} players with < {min_proj_min} min.")
-            else:
-                 pass # Fallback to fpts or skip custom rating
-
         if selected_sport == "nhl" and not points_col:
             points_col = find_col(df_proj.columns, ["ppg_projection"])
 
@@ -861,12 +826,11 @@ if proceed:
                 merged_df['Optimization Score'] = (merged_df['Boost'] + 2.0) * merged_df['Adjusted Projection']
                 merged_df['Est. Score'] = merged_df['Boost'] * merged_df['Projection']
 
-                tab1, tab2, tab3 = st.tabs(["📊 Data Browser", "💎 Best Value", "🚀 Lineup Optimizer"])
+                # NEW: Expanded Tabs
+                tab1, tab2, tab3, tab4 = st.tabs(["📊 Data Browser", "💎 Best Value", "🚀 Lineup Optimizer", "🧩 Lineup Assistant"])
                 
                 with tab1:
                     cols = ['Sport', 'Slate', 'Game', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Optimization Score']
-                    if selected_sport == 'ncaam' and 'proj_min_col' in locals() and proj_min_col:
-                         cols.append(proj_min_col)
                     cols = [c for c in cols if c in merged_df.columns]
                     st.dataframe(merged_df[cols].sort_values('Optimization Score', ascending=False), use_container_width=True)
 
@@ -890,7 +854,6 @@ if proceed:
                         game_options = ["ALL"] + unique_games
                         selected_games = st.multiselect("Filter by Game:", game_options, default=["ALL"])
                     
-                    # --- NEW: EXCLUDE PLAYERS MULTISELECT ---
                     all_player_names = sorted(merged_df['Player Name'].dropna().unique().tolist())
                     excluded_players = st.multiselect(
                         "Filter by Player (Exclude):",
@@ -901,7 +864,6 @@ if proceed:
                     
                     filtered_df = merged_df.copy()
                     
-                    # Apply Exclusions
                     if excluded_players:
                          filtered_df = filtered_df[~filtered_df['Player Name'].isin(excluded_players)]
 
@@ -934,6 +896,61 @@ if proceed:
                                     )
                         else:
                             st.error("Could not generate lineup.")
+
+                # --- NEW: TAB 4 (Lineup Assistant) ---
+                with tab4:
+                    st.write("Manually lock in specific players and let the optimizer fill the rest of the slots.")
+                    all_assistant_names = sorted(merged_df['Player Name'].dropna().unique().tolist())
+                    
+                    colA, colB = st.columns(2)
+                    with colA:
+                        locked_players = st.multiselect(
+                            "🔒 Select Players to Lock (Max 4):",
+                            all_assistant_names,
+                            default=[],
+                            max_selections=4,
+                            placeholder="Search and select players to lock..."
+                        )
+                    with colB:
+                        assistant_excluded = st.multiselect(
+                            "❌ Exclude Players:",
+                            [p for p in all_assistant_names if p not in locked_players],
+                            default=[],
+                            placeholder="Search players to ignore..."
+                        )
+                        
+                    st.caption(f"Slots remaining to fill automatically: **{5 - len(locked_players)}**")
+                    b_num_lineups = st.slider("Number of Assisted Lineups to Generate", 1, 10, 3, key="builder_slider")
+                    
+                    if st.button("Build Assistant Lineups"):
+                        if len(locked_players) > 0:
+                            builder_df = merged_df.copy()
+                            if assistant_excluded:
+                                builder_df = builder_df[~builder_df['Player Name'].isin(assistant_excluded)]
+                                
+                            built_lineups = run_optimization(builder_df, b_num_lineups, locked_players=locked_players)
+                            if built_lineups:
+                                for idx, lineup in enumerate(built_lineups):
+                                    total_score = lineup['Points'].sum()
+                                    q_players = lineup[lineup['Injury'].astype(str).str.startswith('Q', na=False)]['Player Name'].tolist()
+                                    warn_icon = "⚠️ " if q_players else ""
+                                    
+                                    with st.expander(f"{warn_icon}Assistant Lineup #{idx+1} | Total Score: {total_score:.2f}", expanded=(idx==0)):
+                                        if q_players:
+                                            st.warning(f"**Questionable Status:** {', '.join(q_players)}")
+                                        st.dataframe(
+                                            lineup.drop(columns=['Injury']), 
+                                            column_config={
+                                                "Points": st.column_config.NumberColumn(format="%.2f"),
+                                                "Projection": st.column_config.NumberColumn(format="%.2f"),
+                                            },
+                                            use_container_width=True,
+                                            hide_index=True
+                                        )
+                            else:
+                                st.error("Could not generate a valid lineup with these locks. Check constraints or available player pool.")
+                        else:
+                            st.info("Please lock at least one player to use the assistant.")
     else:
         # --- CASE B: BOOSTS ONLY (No Projections) ---
         if not sport_boosts.empty:
