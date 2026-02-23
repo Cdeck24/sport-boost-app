@@ -473,10 +473,10 @@ def load_projections_from_url(url):
     except Exception as e:
         return None, str(e)
 
-def run_optimization(df, num_lineups=1, locked_players=None):
-    """Runs Assignment Problem solver with optional locked players."""
-    if locked_players is None:
-        locked_players = []
+def run_optimization(df, num_lineups=1, locked_slots=None):
+    """Runs Assignment Problem solver with players locked into specific slots."""
+    if locked_slots is None:
+        locked_slots = {}
         
     SLOT_ADDERS = [2.0, 1.8, 1.6, 1.4, 1.2]
     NUM_SLOTS = len(SLOT_ADDERS)
@@ -520,11 +520,15 @@ def run_optimization(df, num_lineups=1, locked_players=None):
     # Exactly NUM_SLOTS players selected total
     prob += pulp.lpSum([y[i] for i in player_indices]) == NUM_SLOTS
 
-    # LOCK PLAYERS CONSTRAINT
-    if locked_players:
-        locked_indices = [i for i in player_indices if df.loc[i, "Player Name"] in locked_players]
-        for idx in locked_indices:
-            prob += y[idx] == 1
+    # LOCK PLAYERS TO SPECIFIC SLOTS CONSTRAINT
+    if locked_slots:
+        for s_idx, p_name in locked_slots.items():
+            # Find index of the specific player in our dataframe
+            p_matches = df[df['Player Name'] == p_name].index.tolist()
+            if p_matches:
+                p_idx = p_matches[0]
+                # Force this specific player into this specific slot
+                prob += x[p_idx][s_idx] == 1
 
     generated_lineups = []
     for n in range(num_lineups):
@@ -899,36 +903,56 @@ if proceed:
 
                 # --- NEW: TAB 4 (Lineup Assistant) ---
                 with tab4:
-                    st.write("Manually lock in specific players and let the optimizer fill the rest of the slots.")
-                    all_assistant_names = sorted(merged_df['Player Name'].dropna().unique().tolist())
+                    st.write("Manually lock specific players into specific slots and let the optimizer fill the rest.")
                     
-                    colA, colB = st.columns(2)
+                    # Prepare list with a default "Empty" option
+                    all_assistant_names = ["-- Unassigned --"] + sorted(merged_df['Player Name'].dropna().unique().tolist())
+                    
+                    locked_slots = {}
+                    
+                    # Create 5 columns for the 5 slots
+                    colA, colB, colC, colD, colE = st.columns(5)
+                    
                     with colA:
-                        locked_players = st.multiselect(
-                            "🔒 Select Players to Lock (Max 4):",
-                            all_assistant_names,
-                            default=[],
-                            max_selections=4,
-                            placeholder="Search and select players to lock..."
-                        )
+                        s1 = st.selectbox("Slot 1 (2.0x)", all_assistant_names, key="lock_s1")
+                        if s1 != "-- Unassigned --": locked_slots[0] = s1
                     with colB:
-                        assistant_excluded = st.multiselect(
-                            "❌ Exclude Players:",
-                            [p for p in all_assistant_names if p not in locked_players],
-                            default=[],
-                            placeholder="Search players to ignore..."
-                        )
+                        s2 = st.selectbox("Slot 2 (1.8x)", all_assistant_names, key="lock_s2")
+                        if s2 != "-- Unassigned --": locked_slots[1] = s2
+                    with colC:
+                        s3 = st.selectbox("Slot 3 (1.6x)", all_assistant_names, key="lock_s3")
+                        if s3 != "-- Unassigned --": locked_slots[2] = s3
+                    with colD:
+                        s4 = st.selectbox("Slot 4 (1.4x)", all_assistant_names, key="lock_s4")
+                        if s4 != "-- Unassigned --": locked_slots[3] = s4
+                    with colE:
+                        s5 = st.selectbox("Slot 5 (1.2x)", all_assistant_names, key="lock_s5")
+                        if s5 != "-- Unassigned --": locked_slots[4] = s5
                         
-                    st.caption(f"Slots remaining to fill automatically: **{5 - len(locked_players)}**")
+                    # Validation
+                    selected_locked_names = list(locked_slots.values())
+                    has_duplicates = len(selected_locked_names) != len(set(selected_locked_names))
+                    
+                    st.write("---")
+                    assistant_excluded = st.multiselect(
+                        "❌ Exclude Players from remaining slots:",
+                        [p for p in sorted(merged_df['Player Name'].dropna().unique().tolist()) if p not in selected_locked_names],
+                        default=[],
+                        placeholder="Search players to ignore..."
+                    )
+                        
+                    st.caption(f"Slots remaining to fill automatically: **{5 - len(locked_slots)}**")
                     b_num_lineups = st.slider("Number of Assisted Lineups to Generate", 1, 10, 3, key="builder_slider")
                     
-                    if st.button("Build Assistant Lineups"):
-                        if len(locked_players) > 0:
+                    if has_duplicates:
+                        st.error("⚠️ You cannot lock the same player into multiple slots at once.")
+                    elif st.button("Build Assistant Lineups"):
+                        if len(locked_slots) > 0:
                             builder_df = merged_df.copy()
                             if assistant_excluded:
                                 builder_df = builder_df[~builder_df['Player Name'].isin(assistant_excluded)]
                                 
-                            built_lineups = run_optimization(builder_df, b_num_lineups, locked_players=locked_players)
+                            built_lineups = run_optimization(builder_df, b_num_lineups, locked_slots=locked_slots)
                             if built_lineups:
                                 for idx, lineup in enumerate(built_lineups):
                                     total_score = lineup['Points'].sum()
@@ -948,7 +972,7 @@ if proceed:
                                             hide_index=True
                                         )
                             else:
-                                st.error("Could not generate a valid lineup with these locks. Check constraints or available player pool.")
+                                st.error("Could not generate a valid lineup with these locks. Check your constraints.")
                         else:
                             st.info("Please lock at least one player to use the assistant.")
     else:
