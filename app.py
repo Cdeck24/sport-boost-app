@@ -377,7 +377,7 @@ def calculate_cbb_custom_rating(row, mapping):
 
     return round(rating, 2)
 
-def fetch_letter(sport, date_str, letter):
+def fetch_letter(session, sport, date_str, letter):
     """Helper to fetch a single query for a specific date with a fresh token."""
     url = (
         f"https://web.realsports.io/players/sport/{sport}/search"
@@ -385,17 +385,18 @@ def fetch_letter(sport, date_str, letter):
         f"&query={letter}&searchType=ratingLineup"
     )
     
-    for _ in range(3):
+    for attempt in range(3):
         try:
             # Generate a fresh token for each individual request
             token = generate_request_token()
             headers = build_headers(token)
             
-            r = requests.get(url, headers=headers, timeout=10)
+            # Using passed session for connection pooling speedup
+            r = session.get(url, headers=headers, timeout=10)
             if r.status_code == 200:
                 return r.json().get("players", [])
             elif r.status_code == 429: # Rate limited
-                time.sleep(1.5)
+                time.sleep(1.0 + attempt)
             else:
                 break
         except:
@@ -404,61 +405,84 @@ def fetch_letter(sport, date_str, letter):
     return []
 
 def fetch_data_for_sport(sport, target_date):
-    """Fetches player data from API using an expanded two-letter search logic."""
+    """Fetches player data from API using a smart 2-phase search to maximize speed and coverage."""
+    session = requests.Session()
     sport_data = []
+    seen_players = set()
     active_date_str = str(target_date)
 
-    # 1. Expand search queries to find hidden players safely
     single_letters = list(string.ascii_uppercase)
     special_chars = ['Š', 'Ć', 'Č', 'Ž', 'Đ', 'Ö', 'Ä', 'Ü', 'Å', 'Ø']
-    # All 676 two-letter combinations
-    two_letter_combos = [a + b for a in string.ascii_uppercase for b in string.ascii_uppercase]
+    base_queries = single_letters + special_chars
     
-    search_queries = single_letters + special_chars + two_letter_combos
-    
-    # 2. Lower max_workers to 10 to safely process the expanded queries without severe 429 rate limits
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_req = {executor.submit(fetch_letter, sport, active_date_str, q): q for q in search_queries}
+    def process_players(players):
+        for player in players:
+            full_name = f"{player.get('firstName', '')} {player.get('lastName', '')}".strip()
+            if full_name in seen_players:
+                continue
+            seen_players.add(full_name)
+            
+            raw_injury = player.get('injuryStatus')
+            injury_status = str(raw_injury).strip().upper() if raw_injury else ""
+            
+            if injury_status in ['O', 'OUT', 'IR', 'INJ']: 
+                continue
+
+            position = player.get('position', 'Unknown')
+            if sport.lower() == 'nhl' and position == 'G':
+                continue
+            
+            boost_value = 0.0 
+            details = player.get("details")
+            
+            if details and isinstance(details, list) and len(details) > 0 and "text" in details[0]:
+                text = details[0]["text"]
+                boost_str = text.replace("x", "").replace("+", "").strip()
+                try:
+                    boost_value = float(boost_str) 
+                except ValueError:
+                    pass 
+            
+            sport_data.append({
+                "Sport": sport.upper(),
+                "Player Name": full_name,
+                "Position": position,
+                "Boost": boost_value,
+                "Date": active_date_str,
+                "Injury": injury_status
+            })
+
+    # Increased max_workers to 30 safely because of Smart Expansion
+    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
+        # PHASE 1: Base Letters
+        letters_to_expand = []
+        future_to_req = {executor.submit(fetch_letter, session, sport, active_date_str, q): q for q in base_queries}
         
         for future in concurrent.futures.as_completed(future_to_req):
+            q = future_to_req[future]
             try:
                 players = future.result()
                 if not players: continue
-
-                for player in players:
-                    raw_injury = player.get('injuryStatus')
-                    injury_status = str(raw_injury).strip().upper() if raw_injury else ""
-                    
-                    if injury_status in ['O', 'OUT', 'IR', 'INJ']: 
-                        continue
-
-                    position = player.get('position', 'Unknown')
-                    if sport.lower() == 'nhl' and position == 'G':
-                        continue
-
-                    full_name = f"{player['firstName']} {player['lastName']}"
-                    
-                    boost_value = 0.0 
-                    details = player.get("details")
-                    
-                    if details and isinstance(details, list) and len(details) > 0 and "text" in details[0]:
-                        text = details[0]["text"]
-                        boost_str = text.replace("x", "").replace("+", "").strip()
-                        try:
-                            boost_value = float(boost_str) 
-                        except ValueError:
-                            pass 
-                    
-                    sport_data.append({
-                        "Sport": sport.upper(),
-                        "Player Name": full_name,
-                        "Position": position,
-                        "Boost": boost_value,
-                        "Date": active_date_str,
-                        "Injury": injury_status
-                    })
+                process_players(players)
+                
+                # Smart Expansion trigger: if a single letter returns 10+ players, it might be truncated. Expand it.
+                if len(players) >= 10 and len(q) == 1 and q in string.ascii_uppercase:
+                    letters_to_expand.append(q)
             except:
                 continue
+                
+        # PHASE 2: Expanded Queries (Only run on letters that hit the cap)
+        if letters_to_expand:
+            expanded_queries = [a + b for a in letters_to_expand for b in string.ascii_uppercase]
+            future_to_req_exp = {executor.submit(fetch_letter, session, sport, active_date_str, q): q for q in expanded_queries}
+            
+            for future in concurrent.futures.as_completed(future_to_req_exp):
+                try:
+                    players = future.result()
+                    if not players: continue
+                    process_players(players)
+                except:
+                    continue
             
     return sport_data, active_date_str
 
