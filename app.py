@@ -174,6 +174,9 @@ def generate_request_token():
 
     return ''.join(ret)
 
+token = generate_request_token()
+HEADERS = build_headers(token)
+
 # --- ⬇️ CONFIGURATION ⬇️ ---
 # PROJECTION SOURCES (Google Sheet Links)
 SPORT_PROJECTION_URLS = {
@@ -375,17 +378,16 @@ def calculate_cbb_custom_rating(row, mapping):
     return round(rating, 2)
 
 def fetch_letter(sport, date_str, letter):
-    """Helper to fetch a single letter for a specific date with a fresh token."""
+    """Helper to fetch a single query for a specific date with a fresh token."""
     url = (
         f"https://web.realsports.io/players/sport/{sport}/search"
         f"?day={date_str}&includeNoOneOption=false"
         f"&query={letter}&searchType=ratingLineup"
     )
     
-    # Add a retry loop to handle potential rate limiting (429 errors)
     for _ in range(3):
         try:
-            # Generate a fresh token right when the request is made
+            # Generate a fresh token for each individual request
             token = generate_request_token()
             headers = build_headers(token)
             
@@ -402,17 +404,21 @@ def fetch_letter(sport, date_str, letter):
     return []
 
 def fetch_data_for_sport(sport, target_date):
-    """Fetches player data from API using strictly current fantasy day."""
+    """Fetches player data from API using an expanded two-letter search logic."""
     sport_data = []
-    
     active_date_str = str(target_date)
 
-    # Parallel Fetch Alphabet + Accented Characters
-    letters = list(string.ascii_uppercase) + ['Š', 'Ć', 'Č', 'Ž', 'Đ', 'Ö', 'Ä', 'Ü', 'Å', 'Ø']
+    # 1. Expand search queries to find hidden players safely
+    single_letters = list(string.ascii_uppercase)
+    special_chars = ['Š', 'Ć', 'Č', 'Ž', 'Đ', 'Ö', 'Ä', 'Ü', 'Å', 'Ø']
+    # All 676 two-letter combinations
+    two_letter_combos = [a + b for a in string.ascii_uppercase for b in string.ascii_uppercase]
     
-    # Lowered max_workers from 20 to 8 to avoid overwhelming the API
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-        future_to_req = {executor.submit(fetch_letter, sport, active_date_str, letter): letter for letter in letters}
+    search_queries = single_letters + special_chars + two_letter_combos
+    
+    # 2. Lower max_workers to 10 to safely process the expanded queries without severe 429 rate limits
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_req = {executor.submit(fetch_letter, sport, active_date_str, q): q for q in search_queries}
         
         for future in concurrent.futures.as_completed(future_to_req):
             try:
