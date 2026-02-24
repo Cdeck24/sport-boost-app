@@ -174,9 +174,6 @@ def generate_request_token():
 
     return ''.join(ret)
 
-token = generate_request_token()
-HEADERS = build_headers(token)
-
 # --- ⬇️ CONFIGURATION ⬇️ ---
 # PROJECTION SOURCES (Google Sheet Links)
 SPORT_PROJECTION_URLS = {
@@ -377,25 +374,35 @@ def calculate_cbb_custom_rating(row, mapping):
 
     return round(rating, 2)
 
-def fetch_letter(session, sport, date_str, letter):
-    """Helper to fetch a single letter for a specific date."""
+def fetch_letter(sport, date_str, letter):
+    """Helper to fetch a single letter for a specific date with a fresh token."""
     url = (
         f"https://web.realsports.io/players/sport/{sport}/search"
         f"?day={date_str}&includeNoOneOption=false"
         f"&query={letter}&searchType=ratingLineup"
     )
-    try:
-        r = session.get(url, timeout=5)
-        if r.status_code == 200:
-            return r.json().get("players", [])
-    except:
-        pass
+    
+    # Add a retry loop to handle potential rate limiting (429 errors)
+    for _ in range(3):
+        try:
+            # Generate a fresh token right when the request is made
+            token = generate_request_token()
+            headers = build_headers(token)
+            
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                return r.json().get("players", [])
+            elif r.status_code == 429: # Rate limited
+                time.sleep(1.5)
+            else:
+                break
+        except:
+            time.sleep(1)
+            
     return []
 
 def fetch_data_for_sport(sport, target_date):
     """Fetches player data from API using strictly current fantasy day."""
-    session = requests.Session()
-    session.headers.update(HEADERS)
     sport_data = []
     
     active_date_str = str(target_date)
@@ -403,8 +410,9 @@ def fetch_data_for_sport(sport, target_date):
     # Parallel Fetch Alphabet + Accented Characters
     letters = list(string.ascii_uppercase) + ['Š', 'Ć', 'Č', 'Ž', 'Đ', 'Ö', 'Ä', 'Ü', 'Å', 'Ø']
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-        future_to_req = {executor.submit(fetch_letter, session, sport, active_date_str, letter): letter for letter in letters}
+    # Lowered max_workers from 20 to 8 to avoid overwhelming the API
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        future_to_req = {executor.submit(fetch_letter, sport, active_date_str, letter): letter for letter in letters}
         
         for future in concurrent.futures.as_completed(future_to_req):
             try:
