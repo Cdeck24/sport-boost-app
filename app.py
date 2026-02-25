@@ -389,7 +389,7 @@ def fetch_letter(session, sport, date_str, query_str):
         "searchType": "ratingLineup"
     }
     
-    for attempt in range(3):
+    for attempt in range(4): # Increased retry attempts
         try:
             token = generate_request_token()
             headers = build_headers(token)
@@ -398,7 +398,7 @@ def fetch_letter(session, sport, date_str, query_str):
             if r.status_code == 200:
                 return r.json().get("players", [])
             elif r.status_code == 429: # Rate limited
-                time.sleep(1.0 + attempt)
+                time.sleep(2.0 * (attempt + 1)) # Exponential backoff
             else:
                 break
         except:
@@ -457,7 +457,8 @@ def fetch_data_for_sport(sport, target_date, specific_queries=None):
                 "Injury": injury_status
             })
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    # Kept workers relatively low so the API doesn't spam 429 errors
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         future_to_req = {executor.submit(fetch_letter, session, sport, active_date_str, q): q for q in queries_to_run}
         
         for future in concurrent.futures.as_completed(future_to_req):
@@ -573,13 +574,12 @@ def run_optimization(df, num_lineups=1, locked_slots=None):
                         lineup_data.append({
                             "Slot": j + 1,
                             "Slot Bonus": f"+{slot_add}x",
-                            "Position": p_pos,
                             "Player Name": p_name,
+                            "Boost": p_boost,
+                            "Eff. Boost": f"{eff_boost:.2f}x",
                             "Injury": p_injury,
                             "Projection": p_proj_orig,
-                            "Base Boost": p_boost,
-                            "Eff. Boost": f"{eff_boost:.2f}x",
-                            "Points": final_pts
+                            "Optimization Score": final_pts
                         })
             lineup_df = pd.DataFrame(lineup_data).sort_values(by="Slot")
             generated_lineups.append(lineup_df)
@@ -687,18 +687,14 @@ if df_proj_copy is not None and not df_proj_copy.empty:
         if name_col:
             names_to_search.extend(temp_df[name_col].astype(str).tolist())
     
-    # Clean the list of names and extract LAST NAMES for exact API targeting
+    # Clean the list of names and extract exact FULL NAMES for precise API targeting
     cleaned_names = []
     for n in names_to_search:
         n_str = str(n).strip()
         if n_str.lower() != 'nan' and n_str:
-            # Remove accents to ensure maximum matching compatibility with URL formats
+            # Remove accents but keep the full name to prevent truncation limits
             ascii_name = unicodedata.normalize('NFKD', n_str).encode('ascii', 'ignore').decode('utf-8')
-            parts = ascii_name.split()
-            if len(parts) > 1:
-                cleaned_names.append(parts[-1]) # Just last name avoids name discrepancy misses
-            else:
-                cleaned_names.append(ascii_name)
+            cleaned_names.append(ascii_name)
     names_to_search = list(set(cleaned_names))
 
 # 2. Fetch Live Logic (Merges into Global Store)
@@ -890,19 +886,20 @@ if proceed:
                 merged_df['Optimization Score'] = (merged_df['Boost'] + 2.0) * merged_df['Adjusted Projection']
                 merged_df['Est. Score'] = merged_df['Boost'] * merged_df['Projection']
 
-                # NEW: Expanded Tabs
+                # NEW: Restricting columns visually in tabs per user request
+                display_cols = ['Player Name', 'Boost', 'Injury', 'Projection', 'Optimization Score']
+
                 tab1, tab2, tab3, tab4 = st.tabs(["📊 Data Browser", "💎 Best Value", "🚀 Lineup Optimizer", "🧩 Lineup Assistant"])
                 
                 with tab1:
-                    cols = ['Sport', 'Slate', 'Game', 'Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Optimization Score']
-                    cols = [c for c in cols if c in merged_df.columns]
-                    st.dataframe(merged_df[cols].sort_values('Optimization Score', ascending=False), use_container_width=True)
+                    available_cols = [c for c in display_cols if c in merged_df.columns]
+                    st.dataframe(merged_df[available_cols].sort_values('Optimization Score', ascending=False), use_container_width=True, hide_index=True)
 
                 with tab2:
-                    value_cols = ['Position', 'Player Name', 'Injury', 'Boost', 'Projection', 'Optimization Score']
                     st.dataframe(
-                        merged_df[value_cols].sort_values('Optimization Score', ascending=False).head(50), 
+                        merged_df[available_cols].sort_values('Optimization Score', ascending=False).head(50), 
                         use_container_width=True,
+                        hide_index=True,
                         column_config={"Optimization Score": st.column_config.NumberColumn(format="%.2f")}
                     )
 
@@ -942,17 +939,20 @@ if proceed:
                         lineups = run_optimization(filtered_df, num_lineups)
                         if lineups:
                             for idx, lineup in enumerate(lineups):
-                                total_score = lineup['Points'].sum()
+                                total_score = lineup['Optimization Score'].sum()
                                 q_players = lineup[lineup['Injury'].astype(str).str.startswith('Q', na=False)]['Player Name'].tolist()
                                 warn_icon = "⚠️ " if q_players else ""
                                 
                                 with st.expander(f"{warn_icon}Lineup #{idx+1} | Total Score: {total_score:.2f}", expanded=(idx==0)):
                                     if q_players:
                                         st.warning(f"**Questionable Status:** {', '.join(q_players)}")
+                                    
+                                    # Set column order for output Lineups
+                                    lineup_disp_cols = ['Slot', 'Player Name', 'Boost', 'Eff. Boost', 'Injury', 'Projection', 'Optimization Score']
                                     st.dataframe(
-                                        lineup.drop(columns=['Injury']), 
+                                        lineup[lineup_disp_cols], 
                                         column_config={
-                                            "Points": st.column_config.NumberColumn(format="%.2f"),
+                                            "Optimization Score": st.column_config.NumberColumn(format="%.2f"),
                                             "Projection": st.column_config.NumberColumn(format="%.2f"),
                                         },
                                         use_container_width=True,
@@ -1015,17 +1015,19 @@ if proceed:
                             built_lineups = run_optimization(builder_df, b_num_lineups, locked_slots=locked_slots)
                             if built_lineups:
                                 for idx, lineup in enumerate(built_lineups):
-                                    total_score = lineup['Points'].sum()
+                                    total_score = lineup['Optimization Score'].sum()
                                     q_players = lineup[lineup['Injury'].astype(str).str.startswith('Q', na=False)]['Player Name'].tolist()
                                     warn_icon = "⚠️ " if q_players else ""
                                     
                                     with st.expander(f"{warn_icon}Assistant Lineup #{idx+1} | Total Score: {total_score:.2f}", expanded=(idx==0)):
                                         if q_players:
                                             st.warning(f"**Questionable Status:** {', '.join(q_players)}")
+                                            
+                                        lineup_disp_cols = ['Slot', 'Player Name', 'Boost', 'Eff. Boost', 'Injury', 'Projection', 'Optimization Score']
                                         st.dataframe(
-                                            lineup.drop(columns=['Injury']), 
+                                            lineup[lineup_disp_cols], 
                                             column_config={
-                                                "Points": st.column_config.NumberColumn(format="%.2f"),
+                                                "Optimization Score": st.column_config.NumberColumn(format="%.2f"),
                                                 "Projection": st.column_config.NumberColumn(format="%.2f"),
                                             },
                                             use_container_width=True,
