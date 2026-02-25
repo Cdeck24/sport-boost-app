@@ -653,7 +653,7 @@ with st.sidebar:
 
     # --- NEW DEBUG TOOLS SECTION ---
     st.header("4. Debug Tools")
-    debug_players_btn = st.button("Check API: Mobley, Mitchell, Hartenstein")
+    debug_players_btn = st.button("Check API: Jackson, Thomas, Lovering")
 
 # --- Main Logic ---
 
@@ -663,7 +663,7 @@ if debug_players_btn:
     st.info(f"Checking raw API responses for selected players on {get_fantasy_day()}...")
     session = requests.Session()
     date_str = str(get_fantasy_day())
-    test_players = ["Evan Mobley", "Donovan Mitchell", "Isaiah Hartenstein"]
+    test_players = ["Gregory Jackson", "Cameron Thomas", "Lawson Lovering"]
     
     for p_name in test_players:
         st.write(f"### Search Query: {p_name}")
