@@ -431,22 +431,30 @@ def fetch_data_for_sport(sport, target_date, specific_queries=None):
             raw_injury = player.get('injuryStatus')
             injury_status = str(raw_injury).strip().upper() if raw_injury else ""
             
-            if injury_status in ['O', 'OUT', 'IR', 'INJ']: 
-                continue
+            # REMOVED: The code that skipped injured players. 
+            # We now collect everyone so the DB reflects their true injury status.
 
             position = player.get('position', 'Unknown')
             if sport.lower() == 'nhl' and position == 'G':
                 continue
             
             boost_value = 0.0 
-            details = player.get("details")
             
-            if details and isinstance(details, list) and len(details) > 0 and "text" in details[0]:
-                text = str(details[0]["text"])
-                # Robust regex strictly pulls the decimal/integer, ignoring "x", "+", or any other text
-                match = re.search(r"(\d+(\.\d+)?)", text)
-                if match:
-                    boost_value = float(match.group(1))
+            # Primary fetch from direct 'multiplierBonus' object provided by API
+            if "multiplierBonus" in player and player["multiplierBonus"] is not None:
+                try:
+                    boost_value = float(player["multiplierBonus"])
+                except ValueError:
+                    pass
+
+            # Fallback to text parsing if multiplierBonus is missing or 0
+            if boost_value == 0.0:
+                details = player.get("details")
+                if details and isinstance(details, list) and len(details) > 0 and "text" in details[0]:
+                    text = str(details[0]["text"])
+                    match = re.search(r"(\d+(\.\d+)?)", text)
+                    if match:
+                        boost_value = float(match.group(1))
             
             sport_data.append({
                 "Sport": sport.upper(),
@@ -847,10 +855,8 @@ if proceed:
         team_col = find_col(df_proj.columns, ["team", "tm", "squad"])
         opp_col = find_col(df_proj.columns, ["opp", "opponent", "vs"])
         
-        injury_csv_col = find_col(df_proj.columns, ["injury", "status"])
-        if injury_csv_col:
-            df_proj = df_proj[~df_proj[injury_csv_col].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])]
-
+        # REMOVED: injury filter from CSV projections logic so injured players map correctly
+        
         if not game_col and not (team_col and opp_col):
             for col in df_proj.columns:
                 sample = df_proj[col].dropna().astype(str).head(5)
@@ -879,7 +885,7 @@ if proceed:
             merged_df['Injury'] = merged_df['Injury'].fillna('')
             merged_df['Sport'] = merged_df['Sport'].fillna(selected_sport.upper())
 
-            merged_df = merged_df[~merged_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])]
+            # REMOVED: final injury filter logic to allow injured players to display in Browser/Value tabs
 
             if not merged_df.empty:
                 merged_df = merged_df.rename(columns={points_col: 'Projection'})
@@ -959,10 +965,13 @@ if proceed:
                     if "ALL" not in selected_games:
                         filtered_df = filtered_df[filtered_df['Game'].isin(selected_games)]
                         
-                    st.caption(f"Pool Size: {len(filtered_df)} Players")
+                    # CRITICAL FIX: Automatically drop strictly 'OUT' players so they aren't generated in lineups
+                    opt_df = filtered_df[~filtered_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])]
+                        
+                    st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured)")
 
                     if st.button("Generate Optimal Lineups"):
-                        lineups = run_optimization(filtered_df, num_lineups)
+                        lineups = run_optimization(opt_df, num_lineups)
                         if lineups:
                             for idx, lineup in enumerate(lineups):
                                 total_score = lineup['Optimization Score'].sum()
@@ -1035,6 +1044,10 @@ if proceed:
                     elif st.button("Build Assistant Lineups"):
                         if len(locked_slots) > 0:
                             builder_df = merged_df.copy()
+                            
+                            # Also filter out strictly OUT players for the assistant pool (unless locked manually)
+                            builder_df = builder_df[~builder_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ']) | builder_df['Player Name'].isin(selected_locked_names)]
+
                             if assistant_excluded:
                                 builder_df = builder_df[~builder_df['Player Name'].isin(assistant_excluded)]
                                 
