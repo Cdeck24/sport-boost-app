@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+from requests.adapters import HTTPAdapter
 import datetime
 import string
 import pandas as pd
@@ -25,6 +26,8 @@ DEVICE_UUID = '0e497d76-7bd5-4cf5-b63c-f194d1d4cbcf'
 # you are going to find this yourself looks like fgOD12!sdg49!random-random-random , found in headers in inspect network
 REAL_AUTH_TOKEN = 'xnr5VpW3!ApZk8L2E!4fe6e26f-949f-4936-ae3e-16384878932f'
 
+# PRE-COMPILED REGEX FOR PERFORMANCE
+BOOST_REGEX = re.compile(r"(\d+(\.\d+)?)")
 
 # auth functions
 def build_headers(token):
@@ -409,7 +412,7 @@ def fetch_letter(session, sport, date_str, query_str):
         "searchType": "ratingLineup"
     }
     
-    for attempt in range(4): # Increased retry attempts
+    for attempt in range(4):
         try:
             token = generate_request_token()
             headers = build_headers(token)
@@ -418,7 +421,7 @@ def fetch_letter(session, sport, date_str, query_str):
             if r.status_code == 200:
                 return r.json().get("players", [])
             elif r.status_code == 429: # Rate limited
-                time.sleep(2.0 * (attempt + 1)) # Exponential backoff
+                time.sleep(1.5 * (attempt + 1)) # Exponential backoff
             else:
                 break
         except:
@@ -429,6 +432,11 @@ def fetch_letter(session, sport, date_str, query_str):
 def fetch_data_for_sport(sport, target_date):
     """Fetches player data from API using a smart 2-phase letter expansion."""
     session = requests.Session()
+    # OPTIMIZATION: Mount a custom adapter to allow more concurrent connections without blocking
+    adapter = HTTPAdapter(pool_connections=25, pool_maxsize=25, max_retries=2)
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
+    
     sport_data = []
     seen_players = set()
     active_date_str = str(target_date)
@@ -465,7 +473,8 @@ def fetch_data_for_sport(sport, target_date):
                 details = player.get("details")
                 if details and isinstance(details, list) and len(details) > 0 and "text" in details[0]:
                     text = str(details[0]["text"])
-                    match = re.search(r"(\d+(\.\d+)?)", text)
+                    # Use globally compiled regex for performance
+                    match = BOOST_REGEX.search(text)
                     if match:
                         boost_value = float(match.group(1))
             
@@ -478,9 +487,10 @@ def fetch_data_for_sport(sport, target_date):
                 "Injury": injury_status
             })
 
-    # PHASE 1: Base Letters
+    # PHASE 1: Base Letters 
+    # OPTIMIZATION: Bumped workers to 20 since connection pooling is now enabled
     letters_to_expand = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         future_to_req = {executor.submit(fetch_letter, session, sport, active_date_str, q): q for q in base_queries}
         
         for future in concurrent.futures.as_completed(future_to_req):
@@ -499,7 +509,7 @@ def fetch_data_for_sport(sport, target_date):
     # PHASE 2: Expanded Queries (Only run on letters that hit the cap)
     if letters_to_expand:
         expanded_queries = [a + b for a in letters_to_expand for b in string.ascii_uppercase]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
             future_to_req_exp = {executor.submit(fetch_letter, session, sport, active_date_str, q): q for q in expanded_queries}
             
             for future in concurrent.futures.as_completed(future_to_req_exp):
