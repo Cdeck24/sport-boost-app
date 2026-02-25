@@ -186,6 +186,21 @@ SPORT_PROJECTION_URLS = {
     "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv",
     "ncaam": "" # Empty to force "Boosts Only" display for CBB
 }
+
+# ALIAS MAPPING: Link Nicknames from API to Legal Names in CSV 
+# Keys and values must be strictly lowercase with NO spaces or punctuation
+PLAYER_NAME_MAPPINGS = {
+    "ggjackson": "gregoryjackson",
+    "camthomas": "cameronthomas",
+    "mohamedbamba": "mobamba",
+    "nicclaxton": "nicolasclaxton",
+    "pjtucker": "pjotucker",
+    "timhardaway": "timhardawayjr",
+    "kellyoubre": "kellyoubrejr",
+    "michaelporter": "michaelporterjr",
+    "ronaldholland": "ggjackson", # Example alias hook
+    # Add any missing mappings you discover below!
+}
 # ---------------------------------------------------
 
 # --- Page Configuration ---
@@ -220,7 +235,7 @@ def get_fantasy_day():
     return us_time.date()
 
 def normalize_name(name):
-    """Robust normalization for names with accent removal."""
+    """Robust normalization for names with accent removal and nickname mapping."""
     if not isinstance(name, str):
         name = str(name)
     n = name.lower().strip()
@@ -233,7 +248,12 @@ def normalize_name(name):
         if n.endswith(suffix):
             n = n[:-len(suffix)]
             break
-    return "".join(c for c in n if c.isalnum())
+            
+    # Strip spaces and punctuation
+    n = "".join(c for c in n if c.isalnum())
+    
+    # Apply mapping dictionary
+    return PLAYER_NAME_MAPPINGS.get(n, n)
 
 def normalize_position(pos):
     """Normalizes position strings."""
