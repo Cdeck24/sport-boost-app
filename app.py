@@ -8,6 +8,7 @@ import pulp
 import io
 import unicodedata
 import time
+import re
 
 # new library
 from hashids import Hashids
@@ -377,22 +378,23 @@ def calculate_cbb_custom_rating(row, mapping):
 
     return round(rating, 2)
 
-def fetch_letter(session, sport, date_str, letter):
-    """Helper to fetch a single query for a specific date with a fresh token."""
-    url = (
-        f"https://web.realsports.io/players/sport/{sport}/search"
-        f"?day={date_str}&includeNoOneOption=false"
-        f"&query={letter}&searchType=ratingLineup"
-    )
+def fetch_letter(session, sport, date_str, query_str):
+    """Helper to fetch a single query for a specific date using standard URL encoding."""
+    url = f"https://web.realsports.io/players/sport/{sport}/search"
+    # Passed securely to prevent spaces and special characters from breaking the URL
+    params = {
+        "day": date_str,
+        "includeNoOneOption": "false",
+        "query": query_str,
+        "searchType": "ratingLineup"
+    }
     
     for attempt in range(3):
         try:
-            # Generate a fresh token for each individual request
             token = generate_request_token()
             headers = build_headers(token)
             
-            # Using passed session for connection pooling speedup
-            r = session.get(url, headers=headers, timeout=10)
+            r = session.get(url, params=params, headers=headers, timeout=10)
             if r.status_code == 200:
                 return r.json().get("players", [])
             elif r.status_code == 429: # Rate limited
@@ -405,22 +407,19 @@ def fetch_letter(session, sport, date_str, letter):
     return []
 
 def fetch_data_for_sport(sport, target_date, specific_queries=None):
-    """Fetches player data from API using targeted names or a smart 2-phase search."""
+    """Fetches player data from API using targeted exact names AND a baseline A-Z net."""
     session = requests.Session()
-    session.headers.update(HEADERS)
     sport_data = []
     seen_players = set()
     active_date_str = str(target_date)
 
-    use_smart_expansion = False
-    if specific_queries and len(specific_queries) > 0:
-        # Search specifically for the exact names found in the projections CSV
-        base_queries = specific_queries + ['A', 'E', 'I', 'O', 'U'] # Add vowels as a catch-all net
-    else:
-        single_letters = list(string.ascii_uppercase)
-        special_chars = ['Š', 'Ć', 'Č', 'Ž', 'Đ', 'Ö', 'Ä', 'Ü', 'Å', 'Ø']
-        base_queries = single_letters + special_chars
-        use_smart_expansion = True
+    # Establish the list of strings to search the API for
+    queries_to_run = set(list(string.ascii_uppercase) + ['Š', 'Ć', 'Č', 'Ž', 'Đ'])
+    if specific_queries:
+        for q in specific_queries:
+            queries_to_run.add(q)
+            
+    queries_to_run = list(queries_to_run)
     
     def process_players(players):
         for player in players:
@@ -443,12 +442,11 @@ def fetch_data_for_sport(sport, target_date, specific_queries=None):
             details = player.get("details")
             
             if details and isinstance(details, list) and len(details) > 0 and "text" in details[0]:
-                text = details[0]["text"]
-                boost_str = text.replace("x", "").replace("+", "").strip()
-                try:
-                    boost_value = float(boost_str) 
-                except ValueError:
-                    pass 
+                text = str(details[0]["text"])
+                # Robust regex strictly pulls the decimal/integer, ignoring "x", "+", or any other text
+                match = re.search(r"(\d+(\.\d+)?)", text)
+                if match:
+                    boost_value = float(match.group(1))
             
             sport_data.append({
                 "Sport": sport.upper(),
@@ -459,38 +457,17 @@ def fetch_data_for_sport(sport, target_date, specific_queries=None):
                 "Injury": injury_status
             })
 
-    # Increased max_workers to 30 safely because of Smart Expansion
-    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
-        # PHASE 1: Base Letters
-        letters_to_expand = []
-        future_to_req = {executor.submit(fetch_letter, session, sport, active_date_str, q): q for q in base_queries}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_req = {executor.submit(fetch_letter, session, sport, active_date_str, q): q for q in queries_to_run}
         
         for future in concurrent.futures.as_completed(future_to_req):
-            q = future_to_req[future]
             try:
                 players = future.result()
-                if not players: continue
-                process_players(players)
-                
-                # Smart Expansion trigger: if a single letter returns 10+ players, it might be truncated. Expand it.
-                if len(players) >= 10 and len(q) == 1 and q in string.ascii_uppercase:
-                    letters_to_expand.append(q)
+                if players:
+                    process_players(players)
             except:
                 continue
                 
-        # PHASE 2: Expanded Queries (Only run on letters that hit the cap)
-        if use_smart_expansion and letters_to_expand:
-            expanded_queries = [a + b for a in letters_to_expand for b in string.ascii_uppercase]
-            future_to_req_exp = {executor.submit(fetch_letter, session, sport, active_date_str, q): q for q in expanded_queries}
-            
-            for future in concurrent.futures.as_completed(future_to_req_exp):
-                try:
-                    players = future.result()
-                    if not players: continue
-                    process_players(players)
-                except:
-                    continue
-            
     return sport_data, active_date_str
 
 def load_projections_from_url(url):
@@ -710,15 +687,18 @@ if df_proj_copy is not None and not df_proj_copy.empty:
         if name_col:
             names_to_search.extend(temp_df[name_col].astype(str).tolist())
     
-    # Clean the list of names and add last names as fallback queries
+    # Clean the list of names and extract LAST NAMES for exact API targeting
     cleaned_names = []
     for n in names_to_search:
         n_str = str(n).strip()
         if n_str.lower() != 'nan' and n_str:
-            cleaned_names.append(n_str)
-            parts = n_str.split()
+            # Remove accents to ensure maximum matching compatibility with URL formats
+            ascii_name = unicodedata.normalize('NFKD', n_str).encode('ascii', 'ignore').decode('utf-8')
+            parts = ascii_name.split()
             if len(parts) > 1:
-                cleaned_names.append(parts[-1]) # Extra query for just the last name
+                cleaned_names.append(parts[-1]) # Just last name avoids name discrepancy misses
+            else:
+                cleaned_names.append(ascii_name)
     names_to_search = list(set(cleaned_names))
 
 # 2. Fetch Live Logic (Merges into Global Store)
@@ -728,7 +708,7 @@ if fetch_btn:
     status_text = st.empty()
     try:
         if names_to_search:
-            status_text.text(f"Fetching {len(names_to_search)} specific names/keywords from CSV for {selected_sport.upper()}...")
+            status_text.text(f"Fetching targeted data ({len(names_to_search)} specific names) for {selected_sport.upper()}...")
         else:
             status_text.text(f"Fetching {selected_sport.upper()}...")
         
