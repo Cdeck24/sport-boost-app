@@ -404,16 +404,23 @@ def fetch_letter(session, sport, date_str, letter):
             
     return []
 
-def fetch_data_for_sport(sport, target_date):
-    """Fetches player data from API using a smart 2-phase search to maximize speed and coverage."""
+def fetch_data_for_sport(sport, target_date, specific_queries=None):
+    """Fetches player data from API using targeted names or a smart 2-phase search."""
     session = requests.Session()
+    session.headers.update(HEADERS)
     sport_data = []
     seen_players = set()
     active_date_str = str(target_date)
 
-    single_letters = list(string.ascii_uppercase)
-    special_chars = ['Š', 'Ć', 'Č', 'Ž', 'Đ', 'Ö', 'Ä', 'Ü', 'Å', 'Ø']
-    base_queries = single_letters + special_chars
+    use_smart_expansion = False
+    if specific_queries and len(specific_queries) > 0:
+        # Search specifically for the exact names found in the projections CSV
+        base_queries = specific_queries + ['A', 'E', 'I', 'O', 'U'] # Add vowels as a catch-all net
+    else:
+        single_letters = list(string.ascii_uppercase)
+        special_chars = ['Š', 'Ć', 'Č', 'Ž', 'Đ', 'Ö', 'Ä', 'Ü', 'Å', 'Ø']
+        base_queries = single_letters + special_chars
+        use_smart_expansion = True
     
     def process_players(players):
         for player in players:
@@ -472,7 +479,7 @@ def fetch_data_for_sport(sport, target_date):
                 continue
                 
         # PHASE 2: Expanded Queries (Only run on letters that hit the cap)
-        if letters_to_expand:
+        if use_smart_expansion and letters_to_expand:
             expanded_queries = [a + b for a in letters_to_expand for b in string.ascii_uppercase]
             future_to_req_exp = {executor.submit(fetch_letter, session, sport, active_date_str, q): q for q in expanded_queries}
             
@@ -661,14 +668,72 @@ with st.sidebar:
 
 
 # --- Main Logic ---
+
+# 1. Projection Logic (Moved up to extract exact names for targeted API fetching)
+if 'proj_df' not in st.session_state:
+    st.session_state.proj_df = None
+
+df_proj = st.session_state.proj_df
+df_proj_copy = None
+
+if input_method == "Use Global/Public Projections" and current_proj_url:
+    if st.session_state.proj_df is None:
+         df_proj_copy, _ = load_projections_from_url(current_proj_url)
+         if df_proj_copy is not None:
+             st.session_state.proj_df = df_proj_copy
+             st.rerun()
+    else:
+         df_proj_copy = st.session_state.proj_df
+elif uploaded_file:
+    try: df_proj_copy = pd.read_csv(uploaded_file)
+    except: pass
+elif pasted_text:
+    try:
+        df_proj_copy = pd.read_csv(io.StringIO(pasted_text), sep="\t")
+        if len(df_proj_copy.columns) < 2: df_proj_copy = pd.read_csv(io.StringIO(pasted_text), sep=",")
+    except: pass
+
+names_to_search = []
+if df_proj_copy is not None and not df_proj_copy.empty:
+    temp_df = df_proj_copy.copy()
+    if isinstance(temp_df.columns, pd.MultiIndex):
+        temp_df.columns = [' '.join(col).strip() for col in temp_df.columns.values]
+    temp_df.columns = [str(c).strip() for c in temp_df.columns]
+    
+    first_name_col = find_col(temp_df.columns, ["first name", "firstname", "first"])
+    last_name_col = find_col(temp_df.columns, ["last name", "lastname", "last"])
+    if first_name_col and last_name_col:
+        names = (temp_df[first_name_col].astype(str) + " " + temp_df[last_name_col].astype(str)).tolist()
+        names_to_search.extend(names)
+    else:
+        name_col = find_col(temp_df.columns, ["player", "name", "who"])
+        if name_col:
+            names_to_search.extend(temp_df[name_col].astype(str).tolist())
+    
+    # Clean the list of names and add last names as fallback queries
+    cleaned_names = []
+    for n in names_to_search:
+        n_str = str(n).strip()
+        if n_str.lower() != 'nan' and n_str:
+            cleaned_names.append(n_str)
+            parts = n_str.split()
+            if len(parts) > 1:
+                cleaned_names.append(parts[-1]) # Extra query for just the last name
+    names_to_search = list(set(cleaned_names))
+
+# 2. Fetch Live Logic (Merges into Global Store)
 if fetch_btn:
     all_results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
     try:
-        status_text.text(f"Fetching {selected_sport.upper()}...")
+        if names_to_search:
+            status_text.text(f"Fetching {len(names_to_search)} specific names/keywords from CSV for {selected_sport.upper()}...")
+        else:
+            status_text.text(f"Fetching {selected_sport.upper()}...")
+        
         fetch_date = get_fantasy_day()
-        data, fetch_date_str = fetch_data_for_sport(selected_sport, fetch_date)
+        data, fetch_date_str = fetch_data_for_sport(selected_sport, fetch_date, specific_queries=names_to_search)
         all_results.extend(data)
     except Exception as e:
         st.error(f"Error fetching data: {e}")
@@ -719,29 +784,6 @@ if fetch_btn:
     else:
         st.warning(f"No active data found in API for {selected_sport.upper()}. Using any stored data.")
 
-# 3. Projection Logic
-if 'proj_df' not in st.session_state:
-    st.session_state.proj_df = None
-
-df_proj = st.session_state.proj_df
-df_proj_copy = None
-
-if input_method == "Use Global/Public Projections" and current_proj_url:
-    if st.session_state.proj_df is None:
-         df_proj_copy, _ = load_projections_from_url(current_proj_url)
-         if df_proj_copy is not None:
-             st.session_state.proj_df = df_proj_copy
-             st.rerun()
-    else:
-         df_proj_copy = st.session_state.proj_df
-elif uploaded_file:
-    try: df_proj_copy = pd.read_csv(uploaded_file)
-    except: pass
-elif pasted_text:
-    try:
-        df_proj_copy = pd.read_csv(io.StringIO(pasted_text), sep="\t")
-        if len(df_proj_copy.columns) < 2: df_proj_copy = pd.read_csv(io.StringIO(pasted_text), sep=",")
-    except: pass
 
 # 4. Merging & Optimization
 df_boosts = boost_store.get()
