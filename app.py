@@ -643,8 +643,34 @@ with st.sidebar:
         st.subheader("CBB Filters")
         min_proj_min = st.slider("Min Projected Minutes", 0, 40, 5, help="Filter out players with very low projected minutes.")
 
+    # --- NEW DEBUG TOOLS SECTION ---
+    st.header("4. Debug Tools")
+    debug_players_btn = st.button("Check API: Mobley, Mitchell, Hartenstein")
 
 # --- Main Logic ---
+
+# 0. Intercept Debug Button
+if debug_players_btn:
+    st.subheader("Raw API Results (Debug)")
+    st.info(f"Checking raw API responses for selected players on {get_fantasy_day()}...")
+    session = requests.Session()
+    date_str = str(get_fantasy_day())
+    test_players = ["Evan Mobley", "Donovan Mitchell", "Isaiah Hartenstein"]
+    
+    for p_name in test_players:
+        st.write(f"### Search Query: {p_name}")
+        raw_res = fetch_letter(session, selected_sport, date_str, p_name)
+        # Find closest match to avoid dumping unrelated players
+        matches = [p for p in raw_res if p_name.split()[-1].lower() in str(p.get("lastName", "")).lower()]
+        
+        if matches:
+            st.json(matches)
+        else:
+            st.warning(f"No exact match found for {p_name}. Showing all {len(raw_res)} raw results returned by this query:")
+            st.json(raw_res)
+            
+    st.stop() # Stops the rest of the app from loading so the debug info is clean and isolated
+
 
 # 1. Projection Logic (Moved up to extract exact names for targeted API fetching)
 if 'proj_df' not in st.session_state:
