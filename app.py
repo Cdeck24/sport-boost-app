@@ -406,20 +406,16 @@ def fetch_letter(session, sport, date_str, query_str):
             
     return []
 
-def fetch_data_for_sport(sport, target_date, specific_queries=None):
-    """Fetches player data from API using targeted exact names AND a baseline A-Z net."""
+def fetch_data_for_sport(sport, target_date):
+    """Fetches player data from API using a smart 2-phase letter expansion."""
     session = requests.Session()
     sport_data = []
     seen_players = set()
     active_date_str = str(target_date)
 
-    # Establish the list of strings to search the API for
-    queries_to_run = set(list(string.ascii_uppercase) + ['Š', 'Ć', 'Č', 'Ž', 'Đ'])
-    if specific_queries:
-        for q in specific_queries:
-            queries_to_run.add(q)
-            
-    queries_to_run = list(queries_to_run)
+    single_letters = list(string.ascii_uppercase)
+    special_chars = ['Š', 'Ć', 'Č', 'Ž', 'Đ', 'Ö', 'Ä', 'Ü', 'Å', 'Ø']
+    base_queries = single_letters + special_chars
     
     def process_players(players):
         for player in players:
@@ -430,9 +426,6 @@ def fetch_data_for_sport(sport, target_date, specific_queries=None):
             
             raw_injury = player.get('injuryStatus')
             injury_status = str(raw_injury).strip().upper() if raw_injury else ""
-            
-            # REMOVED: The code that skipped injured players. 
-            # We now collect everyone so the DB reflects their true injury status.
 
             position = player.get('position', 'Unknown')
             if sport.lower() == 'nhl' and position == 'G':
@@ -465,17 +458,37 @@ def fetch_data_for_sport(sport, target_date, specific_queries=None):
                 "Injury": injury_status
             })
 
-    # Kept workers relatively low so the API doesn't spam 429 errors
+    # PHASE 1: Base Letters
+    letters_to_expand = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-        future_to_req = {executor.submit(fetch_letter, session, sport, active_date_str, q): q for q in queries_to_run}
+        future_to_req = {executor.submit(fetch_letter, session, sport, active_date_str, q): q for q in base_queries}
         
         for future in concurrent.futures.as_completed(future_to_req):
+            q = future_to_req[future]
             try:
                 players = future.result()
-                if players:
-                    process_players(players)
+                if not players: continue
+                process_players(players)
+                
+                # Smart Expansion trigger: if a single letter returns 10+ players, expand it.
+                if len(players) >= 10 and len(q) == 1 and q in string.ascii_uppercase:
+                    letters_to_expand.append(q)
             except:
                 continue
+                
+    # PHASE 2: Expanded Queries (Only run on letters that hit the cap)
+    if letters_to_expand:
+        expanded_queries = [a + b for a in letters_to_expand for b in string.ascii_uppercase]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            future_to_req_exp = {executor.submit(fetch_letter, session, sport, active_date_str, q): q for q in expanded_queries}
+            
+            for future in concurrent.futures.as_completed(future_to_req_exp):
+                try:
+                    players = future.result()
+                    if players:
+                        process_players(players)
+                except:
+                    continue
                 
     return sport_data, active_date_str
 
@@ -651,99 +664,18 @@ with st.sidebar:
         st.subheader("CBB Filters")
         min_proj_min = st.slider("Min Projected Minutes", 0, 40, 5, help="Filter out players with very low projected minutes.")
 
-    # --- NEW DEBUG TOOLS SECTION ---
-    st.header("4. Debug Tools")
-    debug_players_btn = st.button("Check API: Jackson, Thomas, Lovering")
-
 # --- Main Logic ---
 
-# 0. Intercept Debug Button
-if debug_players_btn:
-    st.subheader("Raw API Results (Debug)")
-    st.info(f"Checking raw API responses for selected players on {get_fantasy_day()}...")
-    session = requests.Session()
-    date_str = str(get_fantasy_day())
-    test_players = ["Gregory Jackson", "Cameron Thomas", "Lawson Lovering"]
-    
-    for p_name in test_players:
-        st.write(f"### Search Query: {p_name}")
-        raw_res = fetch_letter(session, selected_sport, date_str, p_name)
-        # Find closest match to avoid dumping unrelated players
-        matches = [p for p in raw_res if p_name.split()[-1].lower() in str(p.get("lastName", "")).lower()]
-        
-        if matches:
-            st.json(matches)
-        else:
-            st.warning(f"No exact match found for {p_name}. Showing all {len(raw_res)} raw results returned by this query:")
-            st.json(raw_res)
-            
-    st.stop() # Stops the rest of the app from loading so the debug info is clean and isolated
-
-
-# 1. Projection Logic (Moved up to extract exact names for targeted API fetching)
-if 'proj_df' not in st.session_state:
-    st.session_state.proj_df = None
-
-df_proj = st.session_state.proj_df
-df_proj_copy = None
-
-if input_method == "Use Global/Public Projections" and current_proj_url:
-    if st.session_state.proj_df is None:
-         df_proj_copy, _ = load_projections_from_url(current_proj_url)
-         if df_proj_copy is not None:
-             st.session_state.proj_df = df_proj_copy
-             st.rerun()
-    else:
-         df_proj_copy = st.session_state.proj_df
-elif uploaded_file:
-    try: df_proj_copy = pd.read_csv(uploaded_file)
-    except: pass
-elif pasted_text:
-    try:
-        df_proj_copy = pd.read_csv(io.StringIO(pasted_text), sep="\t")
-        if len(df_proj_copy.columns) < 2: df_proj_copy = pd.read_csv(io.StringIO(pasted_text), sep=",")
-    except: pass
-
-names_to_search = []
-if df_proj_copy is not None and not df_proj_copy.empty:
-    temp_df = df_proj_copy.copy()
-    if isinstance(temp_df.columns, pd.MultiIndex):
-        temp_df.columns = [' '.join(col).strip() for col in temp_df.columns.values]
-    temp_df.columns = [str(c).strip() for c in temp_df.columns]
-    
-    first_name_col = find_col(temp_df.columns, ["first name", "firstname", "first"])
-    last_name_col = find_col(temp_df.columns, ["last name", "lastname", "last"])
-    if first_name_col and last_name_col:
-        names = (temp_df[first_name_col].astype(str) + " " + temp_df[last_name_col].astype(str)).tolist()
-        names_to_search.extend(names)
-    else:
-        name_col = find_col(temp_df.columns, ["player", "name", "who"])
-        if name_col:
-            names_to_search.extend(temp_df[name_col].astype(str).tolist())
-    
-    # Clean the list of names and extract exact FULL NAMES for precise API targeting
-    cleaned_names = []
-    for n in names_to_search:
-        n_str = str(n).strip()
-        if n_str.lower() != 'nan' and n_str:
-            # Remove accents but keep the full name to prevent truncation limits
-            ascii_name = unicodedata.normalize('NFKD', n_str).encode('ascii', 'ignore').decode('utf-8')
-            cleaned_names.append(ascii_name)
-    names_to_search = list(set(cleaned_names))
-
-# 2. Fetch Live Logic (Merges into Global Store)
+# 1. Fetch Live Logic (Merges into Global Store)
 if fetch_btn:
     all_results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
     try:
-        if names_to_search:
-            status_text.text(f"Fetching targeted data ({len(names_to_search)} specific names) for {selected_sport.upper()}...")
-        else:
-            status_text.text(f"Fetching {selected_sport.upper()}...")
+        status_text.text(f"Fetching {selected_sport.upper()}...")
         
         fetch_date = get_fantasy_day()
-        data, fetch_date_str = fetch_data_for_sport(selected_sport, fetch_date, specific_queries=names_to_search)
+        data, fetch_date_str = fetch_data_for_sport(selected_sport, fetch_date)
         all_results.extend(data)
     except Exception as e:
         st.error(f"Error fetching data: {e}")
@@ -795,7 +727,31 @@ if fetch_btn:
         st.warning(f"No active data found in API for {selected_sport.upper()}. Using any stored data.")
 
 
-# 4. Merging & Optimization
+# 2. Projection Logic 
+if 'proj_df' not in st.session_state:
+    st.session_state.proj_df = None
+
+df_proj = st.session_state.proj_df
+df_proj_copy = None
+
+if input_method == "Use Global/Public Projections" and current_proj_url:
+    if st.session_state.proj_df is None:
+         df_proj_copy, _ = load_projections_from_url(current_proj_url)
+         if df_proj_copy is not None:
+             st.session_state.proj_df = df_proj_copy
+             st.rerun()
+    else:
+         df_proj_copy = st.session_state.proj_df
+elif uploaded_file:
+    try: df_proj_copy = pd.read_csv(uploaded_file)
+    except: pass
+elif pasted_text:
+    try:
+        df_proj_copy = pd.read_csv(io.StringIO(pasted_text), sep="\t")
+        if len(df_proj_copy.columns) < 2: df_proj_copy = pd.read_csv(io.StringIO(pasted_text), sep=",")
+    except: pass
+
+# 3. Merging & Optimization
 df_boosts = boost_store.get()
 
 proceed = False
