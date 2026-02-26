@@ -849,14 +849,14 @@ if proceed:
                     break
 
         if name_col and points_col:
+            # Format NHL line data if present so it can be used strictly for optimization later
             if selected_sport == 'nhl':
                 rl_col = find_col(df_proj.columns, ["reg_line"])
                 pp_col = find_col(df_proj.columns, ["pp_line"])
                 if rl_col and pp_col:
                     df_proj[rl_col] = pd.to_numeric(df_proj[rl_col], errors='coerce')
                     df_proj[pp_col] = pd.to_numeric(df_proj[pp_col], errors='coerce')
-                    df_proj = df_proj[(df_proj[rl_col] == 1) & (df_proj[pp_col] == 1)]
-
+            
             sport_boosts['join_key'] = sport_boosts['Player Name'].apply(normalize_name)
             df_proj['join_key'] = df_proj[name_col].apply(normalize_name)
             
@@ -966,7 +966,15 @@ if proceed:
                     opt_df = filtered_df[
                         (~filtered_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])) & 
                         (filtered_df['Projection'] > 0)
-                    ]
+                    ].copy()
+                    
+                    # APPLY NHL LINE FILTERS STRICTLY TO OPTIMIZER
+                    if selected_sport == 'nhl':
+                        rl_col_opt = find_col(opt_df.columns, ["reg_line"])
+                        pp_col_opt = find_col(opt_df.columns, ["pp_line"])
+                        if rl_col_opt and pp_col_opt:
+                            opt_df = opt_df[(opt_df[rl_col_opt] == 1) & (opt_df[pp_col_opt] == 1)]
+                            st.caption("🏒 Optimization pool filtered to Reg Line 1 & PP Line 1 players.")
                         
                     st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured & missing projections)")
 
@@ -1051,6 +1059,16 @@ if proceed:
                                  (builder_df['Projection'] > 0)) | 
                                 builder_df['Player Name'].isin(selected_locked_names)
                             ]
+                            
+                            # APPLY NHL LINE FILTERS STRICTLY TO ASSISTANT (allow locked players to bypass filter)
+                            if selected_sport == 'nhl':
+                                rl_col_b = find_col(builder_df.columns, ["reg_line"])
+                                pp_col_b = find_col(builder_df.columns, ["pp_line"])
+                                if rl_col_b and pp_col_b:
+                                    builder_df = builder_df[
+                                        ((builder_df[rl_col_b] == 1) & (builder_df[pp_col_b] == 1)) | 
+                                        builder_df['Player Name'].isin(selected_locked_names)
+                                    ]
 
                             if assistant_excluded:
                                 builder_df = builder_df[~builder_df['Player Name'].isin(assistant_excluded)]
