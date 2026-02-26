@@ -841,8 +841,6 @@ if proceed:
         team_col = find_col(df_proj.columns, ["team", "tm", "squad"])
         opp_col = find_col(df_proj.columns, ["opp", "opponent", "vs"])
         
-        # REMOVED: injury filter from CSV projections logic so injured players map correctly
-        
         if not game_col and not (team_col and opp_col):
             for col in df_proj.columns:
                 sample = df_proj[col].dropna().astype(str).head(5)
@@ -862,37 +860,50 @@ if proceed:
             sport_boosts['join_key'] = sport_boosts['Player Name'].apply(normalize_name)
             df_proj['join_key'] = df_proj[name_col].apply(normalize_name)
             
-            merged_df = pd.merge(sport_boosts, df_proj, on='join_key', how='right')
+            # Use outer join so EVERY player from API or CSV is available in the app (like Tester)
+            merged_df = pd.merge(sport_boosts, df_proj, on='join_key', how='outer')
             
             merged_df['Boost'] = merged_df['Boost'].fillna(0.0)
-            merged_df['Player Name'] = merged_df['Player Name'].fillna(merged_df[name_col])
-            if pos_col:
+            if name_col in merged_df.columns:
+                merged_df['Player Name'] = merged_df['Player Name'].fillna(merged_df[name_col])
+            
+            if pos_col and pos_col in merged_df.columns:
                 merged_df['Position'] = merged_df['Position'].fillna(merged_df[pos_col])
+            if 'Position' not in merged_df.columns:
+                merged_df['Position'] = 'UNKNOWN'
+                
+            merged_df['Position'] = merged_df['Position'].fillna('UNKNOWN').apply(normalize_position)
+            
             merged_df['Injury'] = merged_df['Injury'].fillna('')
             merged_df['Sport'] = merged_df['Sport'].fillna(selected_sport.upper())
 
-            # REMOVED: final injury filter logic to allow injured players to display in Browser/Value tabs
-
             if not merged_df.empty:
-                merged_df = merged_df.rename(columns={points_col: 'Projection'})
-                if pos_col:
-                    merged_df['Position'] = merged_df[pos_col].fillna(merged_df['Position'])
-                merged_df['Position'] = merged_df['Position'].apply(normalize_position)
-                
-                if slate_col:
+                if points_col in merged_df.columns:
+                    merged_df = merged_df.rename(columns={points_col: 'Projection'})
+                else:
+                    merged_df['Projection'] = 0.0
+                    
+                if slate_col and slate_col in merged_df.columns:
                     merged_df['Slate'] = merged_df[slate_col].fillna("ALL")
                 else:
                     merged_df['Slate'] = "ALL"
                     
-                if team_col and opp_col:
-                    merged_df['Game'] = merged_df.apply(lambda x: " vs ".join(sorted([str(x[team_col]), str(x[opp_col])])), axis=1)
-                elif game_col:
+                if team_col and opp_col and team_col in merged_df.columns and opp_col in merged_df.columns:
+                    def get_game(x):
+                        t = x.get(team_col)
+                        o = x.get(opp_col)
+                        if pd.notna(t) and pd.notna(o):
+                            return " vs ".join(sorted([str(t), str(o)]))
+                        return "Unknown"
+                    merged_df['Game'] = merged_df.apply(get_game, axis=1)
+                elif game_col and game_col in merged_df.columns:
                     merged_df['Game'] = merged_df[game_col].fillna("Unknown")
                 else:
                     merged_df['Game'] = "ALL"
 
                 merged_df['Projection'] = pd.to_numeric(merged_df['Projection'], errors='coerce').fillna(0)
-                merged_df = merged_df[merged_df['Projection'] > 0]
+                # REMOVED: merged_df = merged_df[merged_df['Projection'] > 0]
+                # We keep players with 0 projection so they remain available in the Lineup Tester
 
                 def get_bias_multiplier(row):
                     if row['Position'] in ['WR', 'RB']: return wr_rb_bonus
@@ -951,10 +962,13 @@ if proceed:
                     if "ALL" not in selected_games:
                         filtered_df = filtered_df[filtered_df['Game'].isin(selected_games)]
                         
-                    # CRITICAL FIX: Automatically drop strictly 'OUT' players so they aren't generated in lineups
-                    opt_df = filtered_df[~filtered_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])]
+                    # CRITICAL FIX: Automatically drop strictly 'OUT' players AND 0-projection players so they aren't generated in lineups
+                    opt_df = filtered_df[
+                        (~filtered_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])) & 
+                        (filtered_df['Projection'] > 0)
+                    ]
                         
-                    st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured)")
+                    st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured & missing projections)")
 
                     if st.button("Generate Optimal Lineups"):
                         lineups = run_optimization(opt_df, num_lineups)
@@ -987,7 +1001,7 @@ if proceed:
                     st.write("Manually lock specific players into specific slots and let the optimizer fill the rest.")
                     
                     # Prepare list with a default "Empty" option
-                    all_assistant_names = ["-- Unassigned --"] + sorted(merged_df['Player Name'].dropna().unique().tolist())
+                    all_assistant_names = ["-- Unassigned --"] + sorted(merged_df['Player Name'].dropna().astype(str).unique().tolist())
                     
                     locked_slots = {}
                     
@@ -1031,8 +1045,12 @@ if proceed:
                         if len(locked_slots) > 0:
                             builder_df = merged_df.copy()
                             
-                            # Also filter out strictly OUT players for the assistant pool (unless locked manually)
-                            builder_df = builder_df[~builder_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ']) | builder_df['Player Name'].isin(selected_locked_names)]
+                            # Also filter out strictly OUT and 0-proj players for the assistant pool (unless locked manually)
+                            builder_df = builder_df[
+                                ((~builder_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])) & 
+                                 (builder_df['Projection'] > 0)) | 
+                                builder_df['Player Name'].isin(selected_locked_names)
+                            ]
 
                             if assistant_excluded:
                                 builder_df = builder_df[~builder_df['Player Name'].isin(assistant_excluded)]
@@ -1067,7 +1085,7 @@ if proceed:
                 with tab5:
                     st.write("Test a specific custom lineup to see its projected score.")
                     
-                    test_names = ["-- Select Player --"] + sorted(merged_df['Player Name'].dropna().unique().tolist())
+                    test_names = ["-- Select Player --"] + sorted(merged_df['Player Name'].dropna().astype(str).unique().tolist())
                     
                     t_colA, t_colB, t_colC, t_colD, t_colE = st.columns(5)
                     
