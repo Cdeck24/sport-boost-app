@@ -907,7 +907,7 @@ if proceed:
                 # NEW: Restricting columns visually in tabs per user request
                 display_cols = ['Player Name', 'Boost', 'Injury', 'Projection', 'Optimization Score']
 
-                tab1, tab2, tab3, tab4 = st.tabs(["📊 Data Browser", "💎 Best Value", "🚀 Lineup Optimizer", "🧩 Lineup Assistant"])
+                tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Data Browser", "💎 Best Value", "🚀 Lineup Optimizer", "🧩 Lineup Assistant", "🧪 Lineup Tester"])
                 
                 with tab1:
                     available_cols = [c for c in display_cols if c in merged_df.columns]
@@ -1062,6 +1062,76 @@ if proceed:
                                 st.error("Could not generate a valid lineup with these locks. Check your constraints.")
                         else:
                             st.info("Please lock at least one player to use the assistant.")
+                            
+                # --- NEW: TAB 5 (Lineup Tester) ---
+                with tab5:
+                    st.write("Test a specific custom lineup to see its projected score.")
+                    
+                    test_names = ["-- Select Player --"] + sorted(merged_df['Player Name'].dropna().unique().tolist())
+                    
+                    t_colA, t_colB, t_colC, t_colD, t_colE = st.columns(5)
+                    
+                    with t_colA:
+                        t_s1 = st.selectbox("Slot 1 (2.0x)", test_names, key="test_s1")
+                    with t_colB:
+                        t_s2 = st.selectbox("Slot 2 (1.8x)", test_names, key="test_s2")
+                    with t_colC:
+                        t_s3 = st.selectbox("Slot 3 (1.6x)", test_names, key="test_s3")
+                    with t_colD:
+                        t_s4 = st.selectbox("Slot 4 (1.4x)", test_names, key="test_s4")
+                    with t_colE:
+                        t_s5 = st.selectbox("Slot 5 (1.2x)", test_names, key="test_s5")
+                        
+                    tester_selections = [t_s1, t_s2, t_s3, t_s4, t_s5]
+                    tester_valid = [name for name in tester_selections if name != "-- Select Player --"]
+                    
+                    if len(tester_valid) != len(set(tester_valid)):
+                        st.error("⚠️ You cannot select the same player in multiple slots.")
+                    elif len(tester_valid) > 0:
+                        tester_data = []
+                        slot_adders = [2.0, 1.8, 1.6, 1.4, 1.2]
+                        
+                        for i, p_name in enumerate(tester_selections):
+                            if p_name != "-- Select Player --":
+                                p_row = merged_df[merged_df['Player Name'] == p_name].iloc[0]
+                                p_proj = p_row['Projection']
+                                p_boost = p_row['Boost']
+                                p_inj = p_row['Injury']
+                                
+                                slot_add = slot_adders[i]
+                                eff_boost = p_boost + slot_add
+                                pts = eff_boost * p_proj
+                                
+                                tester_data.append({
+                                    "Slot": i + 1,
+                                    "Slot Bonus": f"+{slot_add}x",
+                                    "Player Name": p_name,
+                                    "Boost": p_boost,
+                                    "Eff. Boost": f"{eff_boost:.2f}x",
+                                    "Injury": p_inj,
+                                    "Projection": p_proj,
+                                    "Score": pts
+                                })
+                                
+                        if tester_data:
+                            tester_df = pd.DataFrame(tester_data)
+                            total_test_score = tester_df['Score'].sum()
+                            
+                            st.subheader(f"Total Projected Score: {total_test_score:.2f}")
+                            
+                            q_players_test = tester_df[tester_df['Injury'].astype(str).str.startswith('Q', na=False)]['Player Name'].tolist()
+                            if q_players_test:
+                                st.warning(f"**Questionable Status:** {', '.join(q_players_test)}")
+                            
+                            st.dataframe(
+                                tester_df,
+                                column_config={
+                                    "Score": st.column_config.NumberColumn(format="%.2f"),
+                                    "Projection": st.column_config.NumberColumn(format="%.2f"),
+                                },
+                                use_container_width=True,
+                                hide_index=True
+                            )
     else:
         # --- CASE B: BOOSTS ONLY (No Projections) ---
         if not sport_boosts.empty:
