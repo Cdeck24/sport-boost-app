@@ -401,6 +401,46 @@ def calculate_cbb_custom_rating(row, mapping):
 
     return round(rating, 2)
 
+def calculate_nhl_custom_rating(row, mapping):
+    """
+    Calculates NHL Player Rating using standard box score stats.
+    
+    Variables used: 'shots', 'goals', 'assists', 'points', 
+    'powerPlayGoals', 'powerPlayAssists', 'blockedShots'
+    """
+    stats = {}
+    for key, col_name in mapping.items():
+        try:
+            val = float(row.get(col_name, 0.0))
+            if pd.isna(val): val = 0.0
+            stats[key] = val
+        except:
+            stats[key] = 0.0
+
+    rating = 0.0
+    
+    # --- 1. SCORING ---
+    # Assists average ~1.20. 
+    # Since points = goals + assists, 'points' covers the 1.20 base value for both.
+    rating += stats.get('points', 0) * 1.20
+    
+    # Goals average ~2.40 total. 
+    # 1.20 is covered by 'points', and 0.16 is covered by 'shots'.
+    # The remaining 1.04 is the premium for a goal vs an assist.
+    rating += stats.get('goals', 0) * 1.04
+    
+    # --- 2. SHOTS & DEFENSE ---
+    rating += stats.get('shots', 0) * 0.16
+    rating += stats.get('blockedShots', 0) * 0.32
+    
+    # --- 3. POWER PLAY ---
+    # Log data confirms PP goals (2.37) carry the same weight as 
+    # Even-Strength goals (2.38 - 2.41). No extra multiplier needed.
+    rating += stats.get('powerPlayGoals', 0) * 0.0
+    rating += stats.get('powerPlayAssists', 0) * 0.0
+
+    return round(rating, 2)
+
 def fetch_letter(session, sport, date_str, query_str):
     """Helper to fetch a single query for a specific date using standard URL encoding."""
     url = f"https://web.realsports.io/players/sport/{sport}/search"
@@ -829,8 +869,19 @@ if proceed:
                 points_col = 'Calculated_Rating'
                 st.success("✅ NBA Custom Efficiency Rating Applied")
         
-        if selected_sport == "nhl" and not points_col:
-            points_col = find_col(df_proj.columns, ["ppg_projection"])
+        if selected_sport == "nhl":
+            nhl_cols_map = {
+                "points": find_col(df_proj.columns, ["points", "pts"]),
+                "goals": find_col(df_proj.columns, ["goals"]),
+                "shots": find_col(df_proj.columns, ["shots", "sog"]),
+                "blockedShots": find_col(df_proj.columns, ["blocks", "blk", "blocked"])
+            }
+            if all(v is not None for v in nhl_cols_map.values()):
+                df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_nhl_custom_rating(row, nhl_cols_map), axis=1)
+                points_col = 'Calculated_Rating'
+                st.success("✅ NHL Custom Efficiency Rating Applied")
+            elif not points_col:
+                points_col = find_col(df_proj.columns, ["ppg_projection"])
 
         if not points_col:
             points_col = find_col(df_proj.columns, ["ppg", "fantasy", "proj", "fpts", "pts", "avg", "fp"])
