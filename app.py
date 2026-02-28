@@ -925,8 +925,14 @@ if proceed:
                     st.dataframe(merged_df[available_cols].sort_values('Optimization Score', ascending=False), use_container_width=True, hide_index=True)
 
                 with tab2:
+                    best_value_df = merged_df.copy()
+                    
+                    # Exclude goalies from the Best Value list for NHL
+                    if selected_sport == 'nhl':
+                        best_value_df = best_value_df[~best_value_df['Position'].isin(['G', 'GOALIE'])]
+                        
                     st.dataframe(
-                        merged_df[available_cols].sort_values('Optimization Score', ascending=False).head(50), 
+                        best_value_df[available_cols].sort_values('Optimization Score', ascending=False).head(50), 
                         use_container_width=True,
                         hide_index=True,
                         column_config={"Optimization Score": st.column_config.NumberColumn(format="%.2f")}
