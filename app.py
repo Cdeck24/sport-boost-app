@@ -201,7 +201,8 @@ PLAYER_NAME_MAPPINGS = {
     "timhardaway": "timhardawayjr",
     "kellyoubre": "kellyoubrejr",
     "michaelporter": "michaelporterjr",
-    "egorchinakhov": "yegorchinakhov"
+    "ronaldholland": "ggjackson", # Example alias hook
+    # Add any missing mappings you discover below!
 }
 # ---------------------------------------------------
 
@@ -974,9 +975,10 @@ if proceed:
                 with tab2:
                     best_value_df = merged_df.copy()
                     
-                    # Exclude goalies from the Best Value list for NHL
+                    # Exclude goalies and < 1.5 projection from the Best Value list for NHL
                     if selected_sport == 'nhl':
                         best_value_df = best_value_df[~best_value_df['Position'].isin(['G', 'GOALIE'])]
+                        best_value_df = best_value_df[best_value_df['Projection'] >= 1.5]
                         
                     st.dataframe(
                         best_value_df[available_cols].sort_values('Optimization Score', ascending=False).head(50), 
@@ -1023,6 +1025,9 @@ if proceed:
                     
                     # APPLY NHL LINE FILTERS STRICTLY TO OPTIMIZER
                     if selected_sport == 'nhl':
+                        # Exclude players with base projection < 1.5 for NHL
+                        opt_df = opt_df[opt_df['Projection'] >= 1.5]
+                        
                         st.write("---")
                         st.write("🏒 **NHL Line Filters** (Select max line; includes lower numbers)")
                         l_col1, l_col2 = st.columns(2)
@@ -1038,9 +1043,9 @@ if proceed:
                                 opt_df = opt_df[opt_df[rl_col_opt] <= max_rl]
                             if max_pp != "All":
                                 opt_df = opt_df[opt_df[pp_col_opt] <= max_pp]
-                            st.caption(f"🏒 Optimization pool filtered to Reg Line ≤ {max_rl} & PP Line ≤ {max_pp}.")
-                        
-                    st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured & missing projections)")
+                            st.caption(f"🏒 Optimization pool filtered to Reg Line ≤ {max_rl} & PP Line ≤ {max_pp}, and Proj ≥ 1.5.")
+                    else:    
+                        st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured & missing projections)")
 
                     if st.button("Generate Optimal Lineups"):
                         lineups = run_optimization(opt_df, num_lineups)
@@ -1135,6 +1140,11 @@ if proceed:
 
                             # APPLY NHL LINE FILTERS STRICTLY TO ASSISTANT (allow locked players to bypass filter)
                             if selected_sport == 'nhl':
+                                builder_df = builder_df[
+                                    (builder_df['Projection'] >= 1.5) | 
+                                    builder_df['Player Name'].isin(selected_locked_names)
+                                ]
+                                
                                 rl_col_b = find_col(builder_df.columns, ["reg_line"])
                                 pp_col_b = find_col(builder_df.columns, ["pp_line"])
                                 if rl_col_b and pp_col_b:
