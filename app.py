@@ -729,6 +729,9 @@ with st.sidebar:
     qb_penalty = 1.0
     num_lineups = st.slider("Number of Lineups", 1, 10, 3)
     
+    default_min_proj = 1.5 if selected_sport == 'nhl' else 0.0
+    min_projection = st.slider("Min Base Projection", 0.0, 25.0, default_min_proj, step=0.1, help="Exclude players with a base projection lower than this value.")
+    
     min_proj_min = 0
     if selected_sport == 'ncaam':
         st.subheader("CBB Filters")
@@ -968,10 +971,12 @@ if proceed:
                 with tab2:
                     best_value_df = merged_df.copy()
                     
-                    # Exclude goalies and < 1.5 projection from the Best Value list for NHL
+                    # Exclude goalies from the Best Value list for NHL
                     if selected_sport == 'nhl':
                         best_value_df = best_value_df[~best_value_df['Position'].isin(['G', 'GOALIE'])]
-                        best_value_df = best_value_df[best_value_df['Projection'] >= 1.5]
+                        
+                    # Apply adjustable minimum projection filter
+                    best_value_df = best_value_df[best_value_df['Projection'] >= min_projection]
                         
                     st.dataframe(
                         best_value_df[available_cols].sort_values('Optimization Score', ascending=False).head(50), 
@@ -1010,19 +1015,13 @@ if proceed:
                     if "ALL" not in selected_games:
                         filtered_df = filtered_df[filtered_df['Game'].isin(selected_games)]
                         
-                    # CRITICAL FIX: Automatically drop strictly 'OUT' players AND 0-projection players so they aren't generated in lineups
+                    # CRITICAL FIX: Automatically drop strictly 'OUT' players AND players below the adjustable min projection
                     opt_df = filtered_df[
                         (~filtered_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])) & 
-                        (filtered_df['Projection'] > 0)
+                        (filtered_df['Projection'] >= min_projection)
                     ].copy()
-                    
-                    # APPLY NHL FILTERS STRICTLY TO OPTIMIZER
-                    if selected_sport == 'nhl':
-                        # Exclude players with base projection < 1.5 for NHL
-                        opt_df = opt_df[opt_df['Projection'] >= 1.5]
-                        st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured, missing proj, and proj < 1.5)")
-                    else:    
-                        st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured & missing projections)")
+                        
+                    st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured & proj < {min_projection})")
 
                     if st.button("Generate Optimal Lineups"):
                         lineups = run_optimization(opt_df, num_lineups)
@@ -1099,19 +1098,12 @@ if proceed:
                         if len(locked_slots) > 0:
                             builder_df = merged_df.copy()
                             
-                            # Also filter out strictly OUT and 0-proj players for the assistant pool (unless locked manually)
+                            # Filter out strictly OUT players and those below min_projection for the assistant pool (unless locked manually)
                             builder_df = builder_df[
                                 ((~builder_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])) & 
-                                 (builder_df['Projection'] > 0)) | 
+                                 (builder_df['Projection'] >= min_projection)) | 
                                 builder_df['Player Name'].isin(selected_locked_names)
                             ]
-
-                            # APPLY NHL FILTERS STRICTLY TO ASSISTANT (allow locked players to bypass filter)
-                            if selected_sport == 'nhl':
-                                builder_df = builder_df[
-                                    (builder_df['Projection'] >= 1.5) | 
-                                    builder_df['Player Name'].isin(selected_locked_names)
-                                ]
 
                             if assistant_excluded:
                                 builder_df = builder_df[~builder_df['Player Name'].isin(assistant_excluded)]
