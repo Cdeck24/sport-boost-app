@@ -900,13 +900,6 @@ if proceed:
                     break
 
         if name_col and points_col:
-            if selected_sport == 'nhl':
-                rl_col = find_col(df_proj.columns, ["reg_line"])
-                pp_col = find_col(df_proj.columns, ["pp_line"])
-                if rl_col and pp_col:
-                    df_proj[rl_col] = pd.to_numeric(df_proj[rl_col], errors='coerce')
-                    df_proj[pp_col] = pd.to_numeric(df_proj[pp_col], errors='coerce')
-
             sport_boosts['join_key'] = sport_boosts['Player Name'].apply(normalize_name)
             df_proj['join_key'] = df_proj[name_col].apply(normalize_name)
             
@@ -1023,27 +1016,11 @@ if proceed:
                         (filtered_df['Projection'] > 0)
                     ].copy()
                     
-                    # APPLY NHL LINE FILTERS STRICTLY TO OPTIMIZER
+                    # APPLY NHL FILTERS STRICTLY TO OPTIMIZER
                     if selected_sport == 'nhl':
                         # Exclude players with base projection < 1.5 for NHL
                         opt_df = opt_df[opt_df['Projection'] >= 1.5]
-                        
-                        st.write("---")
-                        st.write("🏒 **NHL Line Filters** (Select max line; includes lower numbers)")
-                        l_col1, l_col2 = st.columns(2)
-                        with l_col1:
-                            max_rl = st.radio("Max Regular Line", [1, 2, 3, 4, "All"], index=0, horizontal=True, key="opt_rl")
-                        with l_col2:
-                            max_pp = st.radio("Max Power Play Line", [1, 2, 3, 4, "All"], index=0, horizontal=True, key="opt_pp")
-                            
-                        rl_col_opt = find_col(opt_df.columns, ["reg_line"])
-                        pp_col_opt = find_col(opt_df.columns, ["pp_line"])
-                        if rl_col_opt and pp_col_opt:
-                            if max_rl != "All":
-                                opt_df = opt_df[opt_df[rl_col_opt] <= max_rl]
-                            if max_pp != "All":
-                                opt_df = opt_df[opt_df[pp_col_opt] <= max_pp]
-                            st.caption(f"🏒 Optimization pool filtered to Reg Line ≤ {max_rl} & PP Line ≤ {max_pp}, and Proj ≥ 1.5.")
+                        st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured, missing proj, and proj < 1.5)")
                     else:    
                         st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured & missing projections)")
 
@@ -1101,15 +1078,6 @@ if proceed:
                         s5 = st.selectbox("Slot 5 (1.2x)", all_assistant_names, key="lock_s5")
                         if s5 != "-- Unassigned --": locked_slots[4] = s5
                         
-                    if selected_sport == 'nhl':
-                        st.write("---")
-                        st.write("🏒 **NHL Line Filters** (Select max line; includes lower numbers)")
-                        la_col1, la_col2 = st.columns(2)
-                        with la_col1:
-                            max_rl_a = st.radio("Max Regular Line", [1, 2, 3, 4, "All"], index=0, horizontal=True, key="ast_rl")
-                        with la_col2:
-                            max_pp_a = st.radio("Max Power Play Line", [1, 2, 3, 4, "All"], index=0, horizontal=True, key="ast_pp")
-
                     # Validation
                     selected_locked_names = list(locked_slots.values())
                     has_duplicates = len(selected_locked_names) != len(set(selected_locked_names))
@@ -1138,26 +1106,12 @@ if proceed:
                                 builder_df['Player Name'].isin(selected_locked_names)
                             ]
 
-                            # APPLY NHL LINE FILTERS STRICTLY TO ASSISTANT (allow locked players to bypass filter)
+                            # APPLY NHL FILTERS STRICTLY TO ASSISTANT (allow locked players to bypass filter)
                             if selected_sport == 'nhl':
                                 builder_df = builder_df[
                                     (builder_df['Projection'] >= 1.5) | 
                                     builder_df['Player Name'].isin(selected_locked_names)
                                 ]
-                                
-                                rl_col_b = find_col(builder_df.columns, ["reg_line"])
-                                pp_col_b = find_col(builder_df.columns, ["pp_line"])
-                                if rl_col_b and pp_col_b:
-                                    if max_rl_a != "All":
-                                        builder_df = builder_df[
-                                            (builder_df[rl_col_b] <= max_rl_a) | 
-                                            builder_df['Player Name'].isin(selected_locked_names)
-                                        ]
-                                    if max_pp_a != "All":
-                                        builder_df = builder_df[
-                                            (builder_df[pp_col_b] <= max_pp_a) | 
-                                            builder_df['Player Name'].isin(selected_locked_names)
-                                        ]
 
                             if assistant_excluded:
                                 builder_df = builder_df[~builder_df['Player Name'].isin(assistant_excluded)]
