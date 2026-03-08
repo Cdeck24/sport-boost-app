@@ -404,9 +404,6 @@ def calculate_cbb_custom_rating(row, mapping):
 def calculate_nhl_custom_rating(row, mapping):
     """
     Calculates NHL Player Rating using standard box score stats.
-    
-    Variables used: 'shots', 'goals', 'assists', 'points', 
-    'powerPlayGoals', 'powerPlayAssists', 'blockedShots'
     """
     stats = {}
     for key, col_name in mapping.items():
@@ -419,25 +416,15 @@ def calculate_nhl_custom_rating(row, mapping):
 
     rating = 0.0
     
-    # --- 1. SCORING ---
-    # Assists average ~1.20. 
-    # Since points = goals + assists, 'points' covers the 1.20 base value for both.
-    rating += stats.get('points', 0) * 1.20
+    # Blended average for Points (accounting for standard and game-winning assists)
+    rating += stats.get('points', 0) * 1.25
     
-    # Goals average ~2.40 total. 
-    # 1.20 is covered by 'points', and 0.16 is covered by 'shots'.
-    # The remaining 1.04 is the premium for a goal vs an assist.
-    rating += stats.get('goals', 0) * 1.04
+    # Goal Premium to reach ~2.40 total value (1.25 point + 0.99 premium + 0.16 shot)
+    rating += stats.get('goals', 0) * 0.99
     
-    # --- 2. SHOTS & DEFENSE ---
+    # Standard values
     rating += stats.get('shots', 0) * 0.16
     rating += stats.get('blockedShots', 0) * 0.32
-    
-    # --- 3. POWER PLAY ---
-    # Log data confirms PP goals (2.37) carry the same weight as 
-    # Even-Strength goals (2.38 - 2.41). No extra multiplier needed.
-    rating += stats.get('powerPlayGoals', 0) * 0.0
-    rating += stats.get('powerPlayAssists', 0) * 0.0
 
     return round(rating, 2)
 
