@@ -201,7 +201,7 @@ PLAYER_NAME_MAPPINGS = {
     "timhardaway": "timhardawayjr",
     "kellyoubre": "kellyoubrejr",
     "michaelporter": "michaelporterjr",
-    "ronaldholland": "ggjackson", # Example alias hook
+    "mattboldy": "matthewboldy", # Example alias hook
     # Add any missing mappings you discover below!
 }
 # ---------------------------------------------------
