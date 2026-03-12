@@ -190,6 +190,8 @@ SPORT_PROJECTION_URLS = {
     "ncaam": "" # Empty to force "Boosts Only" display for CBB
 }
 
+NHL_LINES_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=15374641&single=true&output=csv"
+
 # ALIAS MAPPING: Link Nicknames from API to Legal Names in CSV 
 # Keys and values must be strictly lowercase with NO spaces or punctuation
 PLAYER_NAME_MAPPINGS = {
@@ -201,7 +203,7 @@ PLAYER_NAME_MAPPINGS = {
     "timhardaway": "timhardawayjr",
     "kellyoubre": "kellyoubrejr",
     "michaelporter": "michaelporterjr",
-    "mattboldy": "matthewboldy", # Example alias hook
+    "mattboldy": "matthewboldy", 
     # Add any missing mappings you discover below!
 }
 # ---------------------------------------------------
@@ -839,6 +841,45 @@ if proceed:
         else:
             name_col = find_col(df_proj.columns, ["player", "name", "who"])
 
+        # --- NHL SECONDARY LINES CSV MERGE ---
+        if selected_sport == 'nhl' and input_method == "Use Global/Public Projections" and name_col:
+            try:
+                lines_df, _ = load_projections_from_url(NHL_LINES_URL)
+                if lines_df is not None and not lines_df.empty:
+                    l_first_name = find_col(lines_df.columns, ["first name", "firstname", "first"])
+                    l_last_name = find_col(lines_df.columns, ["last name", "lastname", "last"])
+                    l_name_col = None
+                    
+                    if l_first_name and l_last_name:
+                        lines_df['Calc_Name'] = lines_df[l_first_name].astype(str) + " " + lines_df[l_last_name].astype(str)
+                        l_name_col = 'Calc_Name'
+                    else:
+                        l_name_col = find_col(lines_df.columns, ["player", "name", "who"])
+                    
+                    if l_name_col:
+                        rl_col = find_col(lines_df.columns, ["reg_line", "line"])
+                        pp_col = find_col(lines_df.columns, ["pp_line", "power"])
+                        
+                        if rl_col or pp_col:
+                            lines_df['join_key'] = lines_df[l_name_col].apply(normalize_name)
+                            cols_to_keep = ['join_key']
+                            if rl_col: 
+                                lines_df = lines_df.rename(columns={rl_col: 'reg_line'})
+                                cols_to_keep.append('reg_line')
+                            if pp_col: 
+                                lines_df = lines_df.rename(columns={pp_col: 'pp_line'})
+                                cols_to_keep.append('pp_line')
+                                
+                            lines_df = lines_df[cols_to_keep].drop_duplicates(subset=['join_key'])
+                            
+                            df_proj['join_key'] = df_proj[name_col].apply(normalize_name)
+                            df_proj = pd.merge(df_proj, lines_df, on='join_key', how='left')
+                            df_proj = df_proj.drop(columns=['join_key'])
+                            st.success("✅ Secondary NHL Line Data (Reg/PP) Successfully Merged")
+            except Exception as e:
+                pass
+
+
         points_col = None 
         
         if selected_sport == "nba":
@@ -890,6 +931,15 @@ if proceed:
                     break
 
         if name_col and points_col:
+            if selected_sport == 'nhl':
+                # Convert line data to numeric specifically
+                rl_col = find_col(df_proj.columns, ["reg_line"])
+                pp_col = find_col(df_proj.columns, ["pp_line"])
+                if rl_col:
+                    df_proj[rl_col] = pd.to_numeric(df_proj[rl_col], errors='coerce')
+                if pp_col:
+                    df_proj[pp_col] = pd.to_numeric(df_proj[pp_col], errors='coerce')
+
             sport_boosts['join_key'] = sport_boosts['Player Name'].apply(normalize_name)
             df_proj['join_key'] = df_proj[name_col].apply(normalize_name)
             
@@ -948,6 +998,13 @@ if proceed:
 
                 # NEW: Restricting columns visually in tabs per user request
                 display_cols = ['Player Name', 'Boost', 'Injury', 'Projection', 'Optimization Score']
+                
+                # Add NHL line data into the visual display if it exists
+                if selected_sport == 'nhl':
+                    rl_col = find_col(merged_df.columns, ["reg_line"])
+                    pp_col = find_col(merged_df.columns, ["pp_line"])
+                    if pp_col: display_cols.insert(3, pp_col)
+                    if rl_col: display_cols.insert(3, rl_col)
 
                 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Data Browser", "💎 Best Value", "🚀 Lineup Optimizer", "🧩 Lineup Assistant", "🧪 Lineup Tester"])
                 
@@ -1007,8 +1064,27 @@ if proceed:
                         (~filtered_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])) & 
                         (filtered_df['Projection'] >= min_projection)
                     ].copy()
-                        
-                    st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured & proj < {min_projection})")
+                    
+                    # APPLY NHL FILTERS STRICTLY TO OPTIMIZER
+                    if selected_sport == 'nhl':
+                        st.write("---")
+                        st.write("🏒 **NHL Line Filters** (Select max line; includes lower numbers)")
+                        l_col1, l_col2 = st.columns(2)
+                        with l_col1:
+                            max_rl = st.radio("Max Regular Line", [1, 2, 3, 4, "All"], index=0, horizontal=True, key="opt_rl")
+                        with l_col2:
+                            max_pp = st.radio("Max Power Play Line", [1, 2, 3, 4, "All"], index=0, horizontal=True, key="opt_pp")
+                            
+                        rl_col_opt = find_col(opt_df.columns, ["reg_line"])
+                        pp_col_opt = find_col(opt_df.columns, ["pp_line"])
+                        if rl_col_opt and pp_col_opt:
+                            if max_rl != "All":
+                                opt_df = opt_df[opt_df[rl_col_opt] <= max_rl]
+                            if max_pp != "All":
+                                opt_df = opt_df[opt_df[pp_col_opt] <= max_pp]
+                            st.caption(f"🏒 Optimization pool filtered to Reg Line ≤ {max_rl} & PP Line ≤ {max_pp}, and Proj ≥ {min_projection}.")
+                    else:    
+                        st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured & proj < {min_projection})")
 
                     if st.button("Generate Optimal Lineups"):
                         lineups = run_optimization(opt_df, num_lineups)
@@ -1064,6 +1140,15 @@ if proceed:
                         s5 = st.selectbox("Slot 5 (1.2x)", all_assistant_names, key="lock_s5")
                         if s5 != "-- Unassigned --": locked_slots[4] = s5
                         
+                    if selected_sport == 'nhl':
+                        st.write("---")
+                        st.write("🏒 **NHL Line Filters** (Select max line; includes lower numbers)")
+                        la_col1, la_col2 = st.columns(2)
+                        with la_col1:
+                            max_rl_a = st.radio("Max Regular Line", [1, 2, 3, 4, "All"], index=0, horizontal=True, key="ast_rl")
+                        with la_col2:
+                            max_pp_a = st.radio("Max Power Play Line", [1, 2, 3, 4, "All"], index=0, horizontal=True, key="ast_pp")
+
                     # Validation
                     selected_locked_names = list(locked_slots.values())
                     has_duplicates = len(selected_locked_names) != len(set(selected_locked_names))
@@ -1091,6 +1176,22 @@ if proceed:
                                  (builder_df['Projection'] >= min_projection)) | 
                                 builder_df['Player Name'].isin(selected_locked_names)
                             ]
+
+                            # APPLY NHL FILTERS STRICTLY TO ASSISTANT (allow locked players to bypass filter)
+                            if selected_sport == 'nhl':
+                                rl_col_b = find_col(builder_df.columns, ["reg_line"])
+                                pp_col_b = find_col(builder_df.columns, ["pp_line"])
+                                if rl_col_b and pp_col_b:
+                                    if max_rl_a != "All":
+                                        builder_df = builder_df[
+                                            (builder_df[rl_col_b] <= max_rl_a) | 
+                                            builder_df['Player Name'].isin(selected_locked_names)
+                                        ]
+                                    if max_pp_a != "All":
+                                        builder_df = builder_df[
+                                            (builder_df[pp_col_b] <= max_pp_a) | 
+                                            builder_df['Player Name'].isin(selected_locked_names)
+                                        ]
 
                             if assistant_excluded:
                                 builder_df = builder_df[~builder_df['Player Name'].isin(assistant_excluded)]
