@@ -995,9 +995,16 @@ if proceed:
                 merged_df['Adjusted Projection'] = merged_df['Projection'] * merged_df['Bias']
                 merged_df['Optimization Score'] = (merged_df['Boost'] + 2.0) * merged_df['Adjusted Projection']
                 merged_df['Est. Score'] = merged_df['Boost'] * merged_df['Projection']
+                
+                # NEW: Calculate expected points for each specific slot
+                merged_df['Slot 1 (2.0x)'] = (merged_df['Boost'] + 2.0) * merged_df['Projection']
+                merged_df['Slot 2 (1.8x)'] = (merged_df['Boost'] + 1.8) * merged_df['Projection']
+                merged_df['Slot 3 (1.6x)'] = (merged_df['Boost'] + 1.6) * merged_df['Projection']
+                merged_df['Slot 4 (1.4x)'] = (merged_df['Boost'] + 1.4) * merged_df['Projection']
+                merged_df['Slot 5 (1.2x)'] = (merged_df['Boost'] + 1.2) * merged_df['Projection']
 
-                # NEW: Restricting columns visually in tabs per user request
-                display_cols = ['Player Name', 'Boost', 'Injury', 'Projection', 'Optimization Score']
+                # NEW: Restricting columns visually in tabs per user request (added slot values)
+                display_cols = ['Player Name', 'Boost', 'Injury', 'Projection', 'Optimization Score', 'Slot 1 (2.0x)', 'Slot 2 (1.8x)', 'Slot 3 (1.6x)', 'Slot 4 (1.4x)', 'Slot 5 (1.2x)']
                 
                 # Add NHL line data into the visual display if it exists
                 if selected_sport == 'nhl':
@@ -1008,9 +1015,19 @@ if proceed:
 
                 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Data Browser", "💎 Best Value", "🚀 Lineup Optimizer", "🧩 Lineup Assistant", "🧪 Lineup Tester"])
                 
+                # Shared formatting for the number columns
+                format_cfg = {
+                    "Optimization Score": st.column_config.NumberColumn(format="%.2f"),
+                    "Slot 1 (2.0x)": st.column_config.NumberColumn(format="%.2f"),
+                    "Slot 2 (1.8x)": st.column_config.NumberColumn(format="%.2f"),
+                    "Slot 3 (1.6x)": st.column_config.NumberColumn(format="%.2f"),
+                    "Slot 4 (1.4x)": st.column_config.NumberColumn(format="%.2f"),
+                    "Slot 5 (1.2x)": st.column_config.NumberColumn(format="%.2f")
+                }
+                
                 with tab1:
                     available_cols = [c for c in display_cols if c in merged_df.columns]
-                    st.dataframe(merged_df[available_cols].sort_values('Optimization Score', ascending=False), use_container_width=True, hide_index=True)
+                    st.dataframe(merged_df[available_cols].sort_values('Optimization Score', ascending=False), use_container_width=True, hide_index=True, column_config=format_cfg)
 
                 with tab2:
                     best_value_df = merged_df.copy()
@@ -1026,7 +1043,7 @@ if proceed:
                         best_value_df[available_cols].sort_values('Optimization Score', ascending=False).head(50), 
                         use_container_width=True,
                         hide_index=True,
-                        column_config={"Optimization Score": st.column_config.NumberColumn(format="%.2f")}
+                        column_config=format_cfg
                     )
 
                 with tab3:
