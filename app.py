@@ -693,6 +693,11 @@ with st.sidebar:
     
     input_method = st.radio("Source", input_options)
     
+    nhl_proj_source = "Custom Formula (Original CSV)"
+    if selected_sport == "nhl" and input_method == "Use Global/Public Projections":
+        st.write("---")
+        nhl_proj_source = st.radio("NHL Projection Strategy", ["Custom Formula (Original CSV)", "Fantasy Points (Lines CSV)"])
+    
     uploaded_file = None
     pasted_text = None
     current_proj_url = None
@@ -859,23 +864,27 @@ if proceed:
                     if l_name_col:
                         rl_col = find_col(lines_df.columns, ["reg_line", "line"])
                         pp_col = find_col(lines_df.columns, ["pp_line", "power"])
+                        fpts_col = find_col(lines_df.columns, ["fpts", "fantasy points", "fantasy", "proj fpts", "projection"])
                         
-                        if rl_col or pp_col:
-                            lines_df['join_key'] = lines_df[l_name_col].apply(normalize_name)
-                            cols_to_keep = ['join_key']
-                            if rl_col: 
-                                lines_df = lines_df.rename(columns={rl_col: 'reg_line'})
-                                cols_to_keep.append('reg_line')
-                            if pp_col: 
-                                lines_df = lines_df.rename(columns={pp_col: 'pp_line'})
-                                cols_to_keep.append('pp_line')
-                                
-                            lines_df = lines_df[cols_to_keep].drop_duplicates(subset=['join_key'])
+                        lines_df['join_key'] = lines_df[l_name_col].apply(normalize_name)
+                        cols_to_keep = ['join_key']
+                        
+                        if rl_col: 
+                            lines_df = lines_df.rename(columns={rl_col: 'reg_line'})
+                            cols_to_keep.append('reg_line')
+                        if pp_col: 
+                            lines_df = lines_df.rename(columns={pp_col: 'pp_line'})
+                            cols_to_keep.append('pp_line')
+                        if fpts_col:
+                            lines_df = lines_df.rename(columns={fpts_col: 'lines_csv_fpts'})
+                            cols_to_keep.append('lines_csv_fpts')
                             
-                            df_proj['join_key'] = df_proj[name_col].apply(normalize_name)
-                            df_proj = pd.merge(df_proj, lines_df, on='join_key', how='left')
-                            df_proj = df_proj.drop(columns=['join_key'])
-                            st.success("✅ Secondary NHL Line Data (Reg/PP) Successfully Merged")
+                        lines_df = lines_df[cols_to_keep].drop_duplicates(subset=['join_key'])
+                        
+                        df_proj['join_key'] = df_proj[name_col].apply(normalize_name)
+                        df_proj = pd.merge(df_proj, lines_df, on='join_key', how='left')
+                        df_proj = df_proj.drop(columns=['join_key'])
+                        st.success("✅ Secondary NHL Line Data Successfully Merged")
             except Exception as e:
                 pass
 
@@ -901,18 +910,25 @@ if proceed:
                 st.success("✅ NBA Custom Efficiency Rating Applied")
         
         if selected_sport == "nhl":
-            nhl_cols_map = {
-                "points": find_col(df_proj.columns, ["points", "pts"]),
-                "goals": find_col(df_proj.columns, ["goals"]),
-                "shots": find_col(df_proj.columns, ["shots", "sog"]),
-                "blockedShots": find_col(df_proj.columns, ["blocks", "blk", "blocked"])
-            }
-            if all(v is not None for v in nhl_cols_map.values()):
-                df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_nhl_custom_rating(row, nhl_cols_map), axis=1)
-                points_col = 'Calculated_Rating'
-                st.success("✅ NHL Custom Efficiency Rating Applied")
-            elif not points_col:
-                points_col = find_col(df_proj.columns, ["ppg_projection"])
+            if nhl_proj_source == "Fantasy Points (Lines CSV)" and 'lines_csv_fpts' in df_proj.columns:
+                points_col = 'lines_csv_fpts'
+                st.success("✅ NHL Fantasy Points (from Lines CSV) Applied")
+            else:
+                if nhl_proj_source == "Fantasy Points (Lines CSV)":
+                    st.warning("⚠️ Could not find Fantasy Points in Lines CSV. Falling back to formula.")
+                    
+                nhl_cols_map = {
+                    "points": find_col(df_proj.columns, ["points", "pts"]),
+                    "goals": find_col(df_proj.columns, ["goals"]),
+                    "shots": find_col(df_proj.columns, ["shots", "sog"]),
+                    "blockedShots": find_col(df_proj.columns, ["blocks", "blk", "blocked"])
+                }
+                if all(v is not None for v in nhl_cols_map.values()):
+                    df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_nhl_custom_rating(row, nhl_cols_map), axis=1)
+                    points_col = 'Calculated_Rating'
+                    st.success("✅ NHL Custom Efficiency Rating Applied")
+                elif not points_col:
+                    points_col = find_col(df_proj.columns, ["ppg_projection"])
 
         if not points_col:
             points_col = find_col(df_proj.columns, ["ppg", "fantasy", "proj", "fpts", "pts", "avg", "fp"])
@@ -1082,26 +1098,7 @@ if proceed:
                         (filtered_df['Projection'] >= min_projection)
                     ].copy()
                     
-                    # APPLY NHL FILTERS STRICTLY TO OPTIMIZER
-                    if selected_sport == 'nhl':
-                        st.write("---")
-                        st.write("🏒 **NHL Line Filters** (Select max line; includes lower numbers)")
-                        l_col1, l_col2 = st.columns(2)
-                        with l_col1:
-                            max_rl = st.radio("Max Regular Line", [1, 2, 3, 4, "All"], index=0, horizontal=True, key="opt_rl")
-                        with l_col2:
-                            max_pp = st.radio("Max Power Play Line", [1, 2, 3, 4, "All"], index=0, horizontal=True, key="opt_pp")
-                            
-                        rl_col_opt = find_col(opt_df.columns, ["reg_line"])
-                        pp_col_opt = find_col(opt_df.columns, ["pp_line"])
-                        if rl_col_opt and pp_col_opt:
-                            if max_rl != "All":
-                                opt_df = opt_df[opt_df[rl_col_opt] <= max_rl]
-                            if max_pp != "All":
-                                opt_df = opt_df[opt_df[pp_col_opt] <= max_pp]
-                            st.caption(f"🏒 Optimization pool filtered to Reg Line ≤ {max_rl} & PP Line ≤ {max_pp}, and Proj ≥ {min_projection}.")
-                    else:    
-                        st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured & proj < {min_projection})")
+                    st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured & proj < {min_projection})")
 
                     if st.button("Generate Optimal Lineups"):
                         lineups = run_optimization(opt_df, num_lineups)
@@ -1156,15 +1153,6 @@ if proceed:
                     with colE:
                         s5 = st.selectbox("Slot 5 (1.2x)", all_assistant_names, key="lock_s5")
                         if s5 != "-- Unassigned --": locked_slots[4] = s5
-                        
-                    if selected_sport == 'nhl':
-                        st.write("---")
-                        st.write("🏒 **NHL Line Filters** (Select max line; includes lower numbers)")
-                        la_col1, la_col2 = st.columns(2)
-                        with la_col1:
-                            max_rl_a = st.radio("Max Regular Line", [1, 2, 3, 4, "All"], index=0, horizontal=True, key="ast_rl")
-                        with la_col2:
-                            max_pp_a = st.radio("Max Power Play Line", [1, 2, 3, 4, "All"], index=0, horizontal=True, key="ast_pp")
 
                     # Validation
                     selected_locked_names = list(locked_slots.values())
@@ -1193,22 +1181,6 @@ if proceed:
                                  (builder_df['Projection'] >= min_projection)) | 
                                 builder_df['Player Name'].isin(selected_locked_names)
                             ]
-
-                            # APPLY NHL FILTERS STRICTLY TO ASSISTANT (allow locked players to bypass filter)
-                            if selected_sport == 'nhl':
-                                rl_col_b = find_col(builder_df.columns, ["reg_line"])
-                                pp_col_b = find_col(builder_df.columns, ["pp_line"])
-                                if rl_col_b and pp_col_b:
-                                    if max_rl_a != "All":
-                                        builder_df = builder_df[
-                                            (builder_df[rl_col_b] <= max_rl_a) | 
-                                            builder_df['Player Name'].isin(selected_locked_names)
-                                        ]
-                                    if max_pp_a != "All":
-                                        builder_df = builder_df[
-                                            (builder_df[pp_col_b] <= max_pp_a) | 
-                                            builder_df['Player Name'].isin(selected_locked_names)
-                                        ]
 
                             if assistant_excluded:
                                 builder_df = builder_df[~builder_df['Player Name'].isin(assistant_excluded)]
