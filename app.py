@@ -274,11 +274,19 @@ def normalize_position(pos):
     return p
 
 def find_col(columns, keywords):
-    """Finds the first column that matches any keyword in the list (Case Insensitive)."""
+    """Finds the first column that matches any keyword exactly, then falls back to substring."""
+    # Exact match first to avoid pulling 'earnedRuns' when looking for 'runs'
+    for col in columns:
+        col_lower = str(col).lower().strip()
+        if any(str(k).lower().strip() == col_lower for k in keywords):
+            return col
+            
+    # Substring match fallback
     for col in columns:
         col_lower = str(col).lower()
         if any(str(k).lower() in col_lower for k in keywords):
             return col
+            
     return None
 
 def standardize_boost_columns(df):
@@ -316,11 +324,14 @@ def calculate_nba_custom_rating(row, mapping):
     """Calculates player rating based on the user-provided efficiency formula."""
     stats = {}
     for key, col_name in mapping.items():
-        try:
-            val = float(row.get(col_name, 0.0))
-            if pd.isna(val): val = 0.0
-            stats[key] = val
-        except:
+        if col_name:
+            try:
+                val = float(row.get(col_name, 0.0))
+                if pd.isna(val): val = 0.0
+                stats[key] = val
+            except:
+                stats[key] = 0.0
+        else:
             stats[key] = 0.0
 
     rating = 0.0
@@ -352,11 +363,14 @@ def calculate_cbb_custom_rating(row, mapping):
     """Calculates CBB player rating based on specific efficiency weights."""
     stats = {}
     for key, col_name in mapping.items():
-        try:
-            val = float(row.get(col_name, 0.0))
-            if pd.isna(val): val = 0.0
-            stats[key] = val
-        except:
+        if col_name:
+            try:
+                val = float(row.get(col_name, 0.0))
+                if pd.isna(val): val = 0.0
+                stats[key] = val
+            except:
+                stats[key] = 0.0
+        else:
             stats[key] = 0.0
 
     # --- Scaling Logic ---
@@ -411,11 +425,14 @@ def calculate_nhl_custom_rating(row, mapping):
     """
     stats = {}
     for key, col_name in mapping.items():
-        try:
-            val = float(row.get(col_name, 0.0))
-            if pd.isna(val): val = 0.0
-            stats[key] = val
-        except:
+        if col_name:
+            try:
+                val = float(row.get(col_name, 0.0))
+                if pd.isna(val): val = 0.0
+                stats[key] = val
+            except:
+                stats[key] = 0.0
+        else:
             stats[key] = 0.0
 
     rating = 0.0
@@ -431,6 +448,67 @@ def calculate_nhl_custom_rating(row, mapping):
     rating += stats.get('blockedShots', 0) * 0.32
 
     return round(rating, 2)
+
+def calculate_mlb_custom_rating(row, mapping):
+    """
+    Calculates MLB Rating automatically detecting Batters vs Pitchers
+    based on the presence of Innings Pitched.
+    """
+    stats = {}
+    for key, col_name in mapping.items():
+        if col_name:
+            try:
+                val = float(row.get(col_name, 0.0))
+                if pd.isna(val): val = 0.0
+                stats[key] = val
+            except:
+                stats[key] = 0.0
+        else:
+            stats[key] = 0.0
+
+    rating = 0.0
+    
+    # Check if Pitcher (has inningsPitched > 0)
+    is_pitcher = stats.get('inningsPitched', 0.0) > 0 or stats.get('saves', 0.0) > 0 or stats.get('earnedRuns', 0.0) > 0
+    
+    if is_pitcher:
+        # PITCHER LOGIC
+        ip = stats.get('inningsPitched', 0.0)
+        full_innings = int(ip)
+        partial_innings = round((ip - full_innings) * 10) 
+        outs = (full_innings * 3) + partial_innings
+        
+        rating += outs * 0.38
+        rating += stats.get('strikeouts', 0) * 0.07
+        rating += stats.get('walks', 0) * -0.30
+        rating += stats.get('earnedRuns', 0) * -0.30
+        rating += stats.get('losses', 0) * -0.30
+        rating += stats.get('hits', 0) * -0.30
+        rating += stats.get('homeRuns', 0) * -0.90 
+        rating += stats.get('wins', 0) * 0.30
+        rating += stats.get('saves', 0) * 0.05
+    else:
+        # BATTER LOGIC
+        outs = stats.get('plateAppearances', 0) - stats.get('hits', 0) - stats.get('walks', 0)
+        total_bases = (
+            stats.get('singles', 0) * 1 +
+            stats.get('doubles', 0) * 2 +
+            stats.get('triples', 0) * 3 +
+            stats.get('homeRuns', 0) * 4
+        )
+        
+        rating += outs * -0.11
+        rating += stats.get('strikeouts', 0) * -0.02
+        rating += stats.get('caughtStealing', 0) * -0.47
+        rating += stats.get('hits', 0) * 0.30
+        rating += total_bases * 0.25
+        rating += stats.get('runs', 0) * 0.80
+        rating += stats.get('runsBattedIn', 0) * 0.75
+        rating += stats.get('stolenBases', 0) * 0.47
+        rating += stats.get('walks', 0) * 0.35
+
+    return round(rating, 2)
+
 
 def fetch_letter(session, sport, date_str, query_str):
     """Helper to fetch a single query for a specific date using standard URL encoding."""
@@ -919,6 +997,31 @@ if proceed:
                 df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_nba_custom_rating(row, nba_cols_map), axis=1)
                 points_col = 'Calculated_Rating'
                 st.success("✅ NBA Custom Efficiency Rating Applied")
+                
+        if selected_sport == "mlb":
+            mlb_cols_map = {
+                "plateAppearances": find_col(df_proj.columns, ["plateappearances", "pa"]),
+                "hits": find_col(df_proj.columns, ["hits"]),
+                "walks": find_col(df_proj.columns, ["walks", "bb"]),
+                "singles": find_col(df_proj.columns, ["singles", "1b"]),
+                "doubles": find_col(df_proj.columns, ["doubles", "2b"]),
+                "triples": find_col(df_proj.columns, ["triples", "3b"]),
+                "homeRuns": find_col(df_proj.columns, ["homeruns", "hr"]),
+                "strikeouts": find_col(df_proj.columns, ["strikeouts", "so"]),
+                "caughtStealing": find_col(df_proj.columns, ["caughtstealing", "cs"]),
+                "runs": find_col(df_proj.columns, ["runs"]),
+                "runsBattedIn": find_col(df_proj.columns, ["runsbattedin", "rbi"]),
+                "stolenBases": find_col(df_proj.columns, ["stolenbases", "sb"]),
+                "inningsPitched": find_col(df_proj.columns, ["inningspitched", "ip"]),
+                "earnedRuns": find_col(df_proj.columns, ["earnedruns", "er"]),
+                "losses": find_col(df_proj.columns, ["losses"]),
+                "wins": find_col(df_proj.columns, ["wins"]),
+                "saves": find_col(df_proj.columns, ["saves", "sv"])
+            }
+            if mlb_cols_map["plateAppearances"] or mlb_cols_map["inningsPitched"]:
+                df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_mlb_custom_rating(row, mlb_cols_map), axis=1)
+                points_col = 'Calculated_Rating'
+                st.success("✅ MLB Custom Efficiency Rating Applied (Batter & Pitcher Supported)")
         
         if selected_sport == "nhl":
             if nhl_proj_source == "Fantasy Points (Lines CSV)" and 'lines_csv_fpts' in df_proj.columns:
