@@ -187,7 +187,8 @@ SPORT_PROJECTION_URLS = {
     "nba": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=0&single=true&output=csv", 
     "nfl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1180552482&single=true&output=csv",
     "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv",
-    "ncaam": "" # Empty to force "Boosts Only" display for CBB
+    "ncaam": "", # Empty to force "Boosts Only" display for CBB
+    "mlb": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=44331943&single=true&output=csv"
 }
 
 NHL_LINES_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=15374641&single=true&output=csv"
@@ -211,7 +212,7 @@ PLAYER_NAME_MAPPINGS = {
 # --- Page Configuration ---
 st.set_page_config(page_title="Player Boost & Optimizer", layout="wide")
 
-st.title("🏀 🏒 Player Boost & Lineup Optimizer")
+st.title("🏀 🏒 ⚾ Player Boost & Lineup Optimizer")
 st.markdown("""
 This tool fetches live **Boost Multipliers** from the API and allows you to merge them with 
 **Fantasy Projections** to find the highest-scoring lineups using **Slot-Based Optimization**.
@@ -673,7 +674,7 @@ def run_optimization(df, num_lineups=1, locked_slots=None):
 # --- Sidebar: Configuration ---
 with st.sidebar:
     st.header("1. Boost Data")
-    selected_sport = st.selectbox("Select League", ["nba", "nhl", "nfl", "ncaam"], index=0)
+    selected_sport = st.selectbox("Select League", ["nba", "nhl", "nfl", "ncaam", "mlb"], index=0)
     
     # --- AUTO-CLEAR STALE PROJECTIONS ---
     if 'current_sport' not in st.session_state:
@@ -709,8 +710,8 @@ with st.sidebar:
             st.success(f"✅ URL Configured for {sport_key.upper()}")
             st.caption(f"Source: {url[:40]}...")
             current_proj_url = url
-        elif sport_key == "ncaam":
-             st.info("ℹ️ No auto-projections for NCAAM. Fetching boosts only.")
+        elif sport_key in ["ncaam"]:
+             st.info(f"ℹ️ No auto-projections for {sport_key.upper()}. Fetching boosts only unless you upload CSV or paste text.")
         else:
             st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
     elif input_method == "Upload CSV":
@@ -935,7 +936,7 @@ if proceed:
 
         pos_col = find_col(df_proj.columns, ["pos", "position"])
         slate_col = find_col(df_proj.columns, ["slate", "contest", "label"])
-        game_col = find_col(df_proj.columns, ["game", "matchup", "match"])
+        game_col = find_col(df_proj.columns, ["game", "matchup", "match", "gameinfo"])
         team_col = find_col(df_proj.columns, ["team", "tm", "squad"])
         opp_col = find_col(df_proj.columns, ["opp", "opponent", "vs"])
         
