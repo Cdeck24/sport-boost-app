@@ -192,6 +192,7 @@ SPORT_PROJECTION_URLS = {
 }
 
 NHL_LINES_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=15374641&single=true&output=csv"
+MLB_PITCHERS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1157919355&single=true&output=csv"
 
 # ALIAS MAPPING: Link Nicknames from API to Legal Names in CSV 
 # Keys and values must be strictly lowercase with NO spaces or punctuation
@@ -806,6 +807,15 @@ if input_method == "Use Global/Public Projections" and current_proj_url:
     if st.session_state.proj_df is None:
          df_proj_copy, _ = load_projections_from_url(current_proj_url)
          if df_proj_copy is not None:
+             # Merge MLB Pitchers if MLB is selected
+             if selected_sport == 'mlb':
+                 try:
+                     pitchers_df, _ = load_projections_from_url(MLB_PITCHERS_URL)
+                     if pitchers_df is not None and not pitchers_df.empty:
+                         df_proj_copy = pd.concat([df_proj_copy, pitchers_df], ignore_index=True)
+                 except Exception as e:
+                     pass
+                     
              st.session_state.proj_df = df_proj_copy
              st.rerun()
     else:
