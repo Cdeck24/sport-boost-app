@@ -494,8 +494,10 @@ def calculate_mlb_custom_rating(row, mapping):
 
     # --- PITCHER LOGIC ---
     ip = stats.get('inningsPitched', 0.0)
-    # Pitcher check: Must have IP or Pitching stats
-    if ip > 0 or stats.get('saves', 0) > 0 or stats.get('wins', 0) > 0:
+    gs = stats.get('gamesStarted', 0.0)
+    
+    # Pitcher check: Must have IP or Pitching stats AND be a starter
+    if (ip > 0 or stats.get('saves', 0) > 0 or stats.get('wins', 0) > 0) and gs >= 1:
         full_innings = int(ip)
         partial_innings = round((ip - full_innings) * 10) 
         p_outs = (full_innings * 3) + partial_innings
@@ -905,7 +907,8 @@ with formula_tester_tab:
             'inningsPitched': ip, 'strikeouts_pitching': so, 'walksAllowed': bb, 
             'earnedRuns': er, 'hitsAllowed': hits, 'homeRunsAllowed': hr, 
             'wins': wins, 'losses': losses, 'saves': saves,
-            'plateAppearances': 0, 'hits': 0 # Ensure hitting stats are 0 for pure pitcher test
+            'plateAppearances': 0, 'hits': 0, # Ensure hitting stats are 0 for pure pitcher test
+            'gamesStarted': 1 # Force to 1 so the tester computes the score
         }
         mapping = {k: k for k in row.keys()}
         st.metric("Calculated MLB Pitcher Rating", f"{calculate_mlb_custom_rating(row, mapping):.2f}")
@@ -1178,12 +1181,26 @@ with app_tab:
                     "hitsAllowed": find_col(df_proj.columns, ["hitsallowed"]),
                     "homeRunsAllowed": find_col(df_proj.columns, ["homerunsallowed"]),
                     "walksAllowed": find_col(df_proj.columns, ["walksallowed"]),
-                    "strikeouts_pitching": find_col(df_proj.columns, ["strikeouts_pitching"])
+                    "strikeouts_pitching": find_col(df_proj.columns, ["strikeouts_pitching"]),
+                    "gamesStarted": find_col(df_proj.columns, ["gamesstarted", "gs"])
                 }
+                
                 if mlb_cols_map["plateAppearances"] or mlb_cols_map["inningsPitched"]:
                     df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_mlb_custom_rating(row, mlb_cols_map), axis=1)
                     points_col = 'Calculated_Rating'
                     st.success("✅ MLB Custom Efficiency Rating Applied (Batter & Pitcher Supported)")
+                    
+                # Extract to DataFrame so we can use it to filter out non-starters later
+                if mlb_cols_map["gamesStarted"]:
+                    df_proj['gamesStarted'] = pd.to_numeric(df_proj[mlb_cols_map["gamesStarted"]], errors='coerce').fillna(0)
+                else:
+                    df_proj['gamesStarted'] = 0
+                    
+                if mlb_cols_map["inningsPitched"]:
+                    df_proj['inningsPitched'] = pd.to_numeric(df_proj[mlb_cols_map["inningsPitched"]], errors='coerce').fillna(0)
+                else:
+                    df_proj['inningsPitched'] = 0
+
             
             if selected_sport == "nhl":
                 if nhl_proj_source == "Fantasy Points (Lines CSV)" and 'lines_csv_fpts' in df_proj.columns:
@@ -1327,6 +1344,10 @@ with app_tab:
                         # Exclude goalies from the Best Value list for NHL
                         if selected_sport == 'nhl':
                             best_value_df = best_value_df[~best_value_df['Position'].isin(['G', 'GOALIE'])]
+                        
+                        # Exclude non-starting pitchers from the Best Value list for MLB
+                        if selected_sport == 'mlb' and 'gamesStarted' in best_value_df.columns and 'inningsPitched' in best_value_df.columns:
+                            best_value_df = best_value_df[~((best_value_df['inningsPitched'] > 0) & (best_value_df['gamesStarted'] < 1))]
                             
                         # Apply adjustable minimum projection filter
                         best_value_df = best_value_df[best_value_df['Projection'] >= min_projection]
@@ -1371,10 +1392,20 @@ with app_tab:
                         # CRITICAL FIX: Automatically drop strictly 'OUT' players AND players below the adjustable min projection
                         opt_df = filtered_df[
                             (~filtered_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])) & 
-                            (filtered_df['Projection'] >= min_projection)
+                            (filtered_df['Projection'] >= min_projection) &
+                            (filtered_df['Projection'] > 0)
                         ].copy()
                         
-                        st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured & proj < {min_projection})")
+                        # APPLY MLB NON-STARTER FILTER TO OPTIMIZER
+                        if selected_sport == 'mlb' and 'gamesStarted' in opt_df.columns and 'inningsPitched' in opt_df.columns:
+                            opt_df = opt_df[~((opt_df['inningsPitched'] > 0) & (opt_df['gamesStarted'] < 1))]
+                        
+                        if selected_sport == 'nhl':
+                            st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured & proj < {min_projection})")
+                        elif selected_sport == 'mlb':
+                            st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured, proj < {min_projection}, & non-starting pitchers)")
+                        else:
+                            st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured & proj < {min_projection})")
 
                         if st.button("Generate Optimal Lineups"):
                             lineups = run_optimization(opt_df, num_lineups)
@@ -1454,9 +1485,17 @@ with app_tab:
                                 # Filter out strictly OUT players and those below min_projection for the assistant pool (unless locked manually)
                                 builder_df = builder_df[
                                     ((~builder_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])) & 
-                                     (builder_df['Projection'] >= min_projection)) | 
+                                     (builder_df['Projection'] >= min_projection) &
+                                     (builder_df['Projection'] > 0)) | 
                                     builder_df['Player Name'].isin(selected_locked_names)
                                 ]
+
+                                # APPLY MLB NON-STARTER FILTER TO ASSISTANT (allow locked players to bypass filter)
+                                if selected_sport == 'mlb' and 'gamesStarted' in builder_df.columns and 'inningsPitched' in builder_df.columns:
+                                    builder_df = builder_df[
+                                        (~((builder_df['inningsPitched'] > 0) & (builder_df['gamesStarted'] < 1))) |
+                                        builder_df['Player Name'].isin(selected_locked_names)
+                                    ]
 
                                 if assistant_excluded:
                                     builder_df = builder_df[~builder_df['Player Name'].isin(assistant_excluded)]
