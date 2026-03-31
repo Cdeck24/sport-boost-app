@@ -471,6 +471,7 @@ def calculate_mlb_custom_rating(row, mapping):
     
     # --- BATTER LOGIC ---
     pa = stats.get('plateAppearances', 0)
+    # Batter check: Must have PAs or Hitting stats
     if pa > 0 or stats.get('hits', 0) > 0:
         outs = pa - stats.get('hits', 0) - stats.get('walks', 0)
         total_bases = (
@@ -493,7 +494,8 @@ def calculate_mlb_custom_rating(row, mapping):
 
     # --- PITCHER LOGIC ---
     ip = stats.get('inningsPitched', 0.0)
-    if ip > 0 or stats.get('saves', 0) > 0 or stats.get('earnedRuns', 0) > 0 or stats.get('wins', 0) > 0:
+    # Pitcher check: Must have IP or Pitching stats
+    if ip > 0 or stats.get('saves', 0) > 0 or stats.get('wins', 0) > 0:
         full_innings = int(ip)
         partial_innings = round((ip - full_innings) * 10) 
         p_outs = (full_innings * 3) + partial_innings
@@ -501,6 +503,7 @@ def calculate_mlb_custom_rating(row, mapping):
         pitching_score += p_outs * 0.38
         pitching_score += stats.get('strikeouts_pitching', 0) * 0.07 
         
+        # Penalties use Allowed columns to avoid conflict with Batter columns
         pitching_score += stats.get('walksAllowed', 0) * -0.30
         pitching_score += stats.get('earnedRuns', 0) * -0.30
         pitching_score += stats.get('losses', 0) * -0.30
@@ -897,13 +900,16 @@ with formula_tester_tab:
         losses = c4.number_input("Losses", 0.0, step=1.0, key="p_loss")
         saves = c1.number_input("Saves", 0.0, step=1.0, key="p_sv")
         
+        # MAPPING stats for test
         row = {
             'inningsPitched': ip, 'strikeouts_pitching': so, 'walksAllowed': bb, 
             'earnedRuns': er, 'hitsAllowed': hits, 'homeRunsAllowed': hr, 
-            'wins': wins, 'losses': losses, 'saves': saves
+            'wins': wins, 'losses': losses, 'saves': saves,
+            'plateAppearances': 0, 'hits': 0 # Ensure hitting stats are 0 for pure pitcher test
         }
         mapping = {k: k for k in row.keys()}
         st.metric("Calculated MLB Pitcher Rating", f"{calculate_mlb_custom_rating(row, mapping):.2f}")
+        st.info("Note: 'hitsAllowed' is used for Pitcher math, 'hits' is used for Batter math.")
         
     elif test_sport == "CBB":
         st.subheader("CBB Raw Stats")
