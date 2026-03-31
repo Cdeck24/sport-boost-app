@@ -510,8 +510,8 @@ def calculate_mlb_custom_rating(row, mapping):
         pitching_score += stats.get('earnedRuns', 0) * -0.30
         pitching_score += stats.get('losses', 0) * -0.30
 
-        pitching_score += stats.get('hitsAllowed', 0) * -0.30
-        pitching_score += stats.get('homeRunsAllowed', 0) * -0.90 
+        pitching_score += stats.get('hitsAllowed', 0) * -0.38
+        pitching_score += stats.get('homeRunsAllowed', 0) * -0.82 
 
         pitching_score += stats.get('wins', 0) * 0.30
         pitching_score += stats.get('saves', 0) * 0.05
