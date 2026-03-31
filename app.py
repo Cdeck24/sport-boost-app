@@ -451,8 +451,8 @@ def calculate_nhl_custom_rating(row, mapping):
 
 def calculate_mlb_custom_rating(row, mapping):
     """
-    Calculates MLB Rating automatically detecting Batters vs Pitchers
-    based on the presence of Innings Pitched.
+    Calculates MLB Rating automatically detecting Batters vs Pitchers.
+    Calculates both scores independently and sums them for two-way players.
     """
     stats = {}
     for key, col_name in mapping.items():
@@ -466,30 +466,13 @@ def calculate_mlb_custom_rating(row, mapping):
         else:
             stats[key] = 0.0
 
-    rating = 0.0
+    hitting_score = 0.0
+    pitching_score = 0.0
     
-    # Check if Pitcher (has inningsPitched > 0)
-    is_pitcher = stats.get('inningsPitched', 0.0) > 0 or stats.get('saves', 0.0) > 0 or stats.get('earnedRuns', 0.0) > 0
-    
-    if is_pitcher:
-        # PITCHER LOGIC
-        ip = stats.get('inningsPitched', 0.0)
-        full_innings = int(ip)
-        partial_innings = round((ip - full_innings) * 10) 
-        outs = (full_innings * 3) + partial_innings
-        
-        rating += outs * 0.38
-        rating += stats.get('strikeouts', 0) * 0.07
-        rating += stats.get('walks', 0) * -0.30
-        rating += stats.get('earnedRuns', 0) * -0.30
-        rating += stats.get('losses', 0) * -0.30
-        rating += stats.get('hits', 0) * -0.30
-        rating += stats.get('homeRuns', 0) * -0.90 
-        rating += stats.get('wins', 0) * 0.30
-        rating += stats.get('saves', 0) * 0.05
-    else:
-        # BATTER LOGIC
-        outs = stats.get('plateAppearances', 0) - stats.get('hits', 0) - stats.get('walks', 0)
+    # --- BATTER LOGIC ---
+    pa = stats.get('plateAppearances', 0)
+    if pa > 0 or stats.get('hits', 0) > 0:
+        outs = pa - stats.get('hits', 0) - stats.get('walks', 0)
         total_bases = (
             stats.get('singles', 0) * 1 +
             stats.get('doubles', 0) * 2 +
@@ -497,17 +480,38 @@ def calculate_mlb_custom_rating(row, mapping):
             stats.get('homeRuns', 0) * 4
         )
         
-        rating += outs * -0.11
-        rating += stats.get('strikeouts', 0) * -0.02
-        rating += stats.get('caughtStealing', 0) * -0.47
-        rating += stats.get('hits', 0) * 0.30
-        rating += total_bases * 0.25
-        rating += stats.get('runs', 0) * 0.80
-        rating += stats.get('runsBattedIn', 0) * 0.75
-        rating += stats.get('stolenBases', 0) * 0.47
-        rating += stats.get('walks', 0) * 0.35
+        hitting_score += outs * -0.11
+        hitting_score += stats.get('strikeouts', 0) * -0.02
+        hitting_score += stats.get('caughtStealing', 0) * -0.47
+        
+        hitting_score += stats.get('hits', 0) * 0.30
+        hitting_score += total_bases * 0.25
+        hitting_score += stats.get('runs', 0) * 0.80
+        hitting_score += stats.get('runsBattedIn', 0) * 0.75
+        hitting_score += stats.get('stolenBases', 0) * 0.47
+        hitting_score += stats.get('walks', 0) * 0.15
 
-    return round(rating, 2)
+    # --- PITCHER LOGIC ---
+    ip = stats.get('inningsPitched', 0.0)
+    if ip > 0 or stats.get('saves', 0) > 0 or stats.get('earnedRuns', 0) > 0 or stats.get('wins', 0) > 0:
+        full_innings = int(ip)
+        partial_innings = round((ip - full_innings) * 10) 
+        p_outs = (full_innings * 3) + partial_innings
+        
+        pitching_score += p_outs * 0.38
+        pitching_score += stats.get('strikeouts_pitching', 0) * 0.07 
+        
+        pitching_score += stats.get('walksAllowed', 0) * -0.30
+        pitching_score += stats.get('earnedRuns', 0) * -0.30
+        pitching_score += stats.get('losses', 0) * -0.30
+
+        pitching_score += stats.get('hitsAllowed', 0) * -0.30
+        pitching_score += stats.get('homeRunsAllowed', 0) * -0.90 
+
+        pitching_score += stats.get('wins', 0) * 0.30
+        pitching_score += stats.get('saves', 0) * 0.05
+
+    return round(hitting_score + pitching_score, 2)
 
 
 def fetch_letter(session, sport, date_str, query_str):
@@ -890,7 +894,38 @@ if input_method == "Use Global/Public Projections" and current_proj_url:
                  try:
                      pitchers_df, _ = load_projections_from_url(MLB_PITCHERS_URL)
                      if pitchers_df is not None and not pitchers_df.empty:
+                         # Rename conflicting pitcher columns to ensure they don't merge with hitting stats
+                         p_rename_map = {
+                             "hits": "hitsAllowed",
+                             "homeruns": "homeRunsAllowed",
+                             "walks": "walksAllowed",
+                             "strikeouts": "strikeouts_pitching",
+                             "runs": "runsAllowed"
+                         }
+                         actual_rename = {}
+                         for col in pitchers_df.columns:
+                             cleaned_col = col.strip().lower()
+                             if cleaned_col in p_rename_map:
+                                 actual_rename[col] = p_rename_map[cleaned_col]
+                         pitchers_df = pitchers_df.rename(columns=actual_rename)
+
                          df_proj_copy = pd.concat([df_proj_copy, pitchers_df], ignore_index=True)
+                         
+                         # Aggregate two-way players into a single row using their name
+                         player_col = find_col(df_proj_copy.columns, ["player", "name", "who"])
+                         if player_col:
+                             df_proj_copy['grp_name'] = df_proj_copy[player_col].astype(str).str.lower().str.strip()
+                             agg_dict = {}
+                             for c in df_proj_copy.columns:
+                                 if c == 'grp_name': continue
+                                 try:
+                                     df_proj_copy[c] = df_proj_copy[c].astype(float)
+                                     agg_dict[c] = 'sum'
+                                 except (ValueError, TypeError):
+                                     agg_dict[c] = 'first'
+                                     
+                             df_proj_copy = df_proj_copy.groupby('grp_name', as_index=False).agg(agg_dict)
+                             df_proj_copy = df_proj_copy.drop(columns=['grp_name'])
                  except Exception as e:
                      pass
                      
@@ -1016,7 +1051,11 @@ if proceed:
                 "earnedRuns": find_col(df_proj.columns, ["earnedruns", "er"]),
                 "losses": find_col(df_proj.columns, ["losses"]),
                 "wins": find_col(df_proj.columns, ["wins"]),
-                "saves": find_col(df_proj.columns, ["saves", "sv"])
+                "saves": find_col(df_proj.columns, ["saves", "sv"]),
+                "hitsAllowed": find_col(df_proj.columns, ["hitsallowed"]),
+                "homeRunsAllowed": find_col(df_proj.columns, ["homerunsallowed"]),
+                "walksAllowed": find_col(df_proj.columns, ["walksallowed"]),
+                "strikeouts_pitching": find_col(df_proj.columns, ["strikeouts_pitching"])
             }
             if mlb_cols_map["plateAppearances"] or mlb_cols_map["inningsPitched"]:
                 df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_mlb_custom_rating(row, mlb_cols_map), axis=1)
