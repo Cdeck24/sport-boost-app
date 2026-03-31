@@ -481,14 +481,18 @@ def calculate_mlb_custom_rating(row, mapping):
             stats.get('homeRuns', 0) * 4
         )
         
-        hitting_score += outs * -0.11
+        # PENALTIES (Adjusted to absorb LOB penalty)
+        hitting_score += outs * -0.13
         hitting_score += stats.get('strikeouts', 0) * -0.02
         hitting_score += stats.get('caughtStealing', 0) * -0.47
         
-        hitting_score += stats.get('hits', 0) * 0.30
+        # OFFENSE
+        hitting_score += stats.get('hits', 0) * 0.28
         hitting_score += total_bases * 0.25
-        hitting_score += stats.get('runs', 0) * 0.80
-        hitting_score += stats.get('runsBattedIn', 0) * 0.75
+        hitting_score += stats.get('runs', 0) * 0.70
+        hitting_score += stats.get('runsBattedIn', 0) * 0.65
+        
+        # BASERUNNING & DISCIPLINE
         hitting_score += stats.get('stolenBases', 0) * 0.47
         hitting_score += stats.get('walks', 0) * 0.15
 
