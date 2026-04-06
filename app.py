@@ -669,7 +669,7 @@ def load_projections_from_url(url):
     except Exception as e:
         return None, str(e)
 
-def run_optimization(df, num_lineups=1, locked_slots=None):
+def run_optimization(df, num_lineups=1, locked_slots=None, sport=""):
     """Runs Assignment Problem solver with players locked into specific slots."""
     if locked_slots is None:
         locked_slots = {}
@@ -715,6 +715,13 @@ def run_optimization(df, num_lineups=1, locked_slots=None):
         
     # Exactly NUM_SLOTS players selected total
     prob += pulp.lpSum([y[i] for i in player_indices]) == NUM_SLOTS
+
+    # MLB Constraint: 3 Pitchers, 2 Batters
+    if sport == 'mlb' and 'Is_Pitcher' in df.columns:
+        pitcher_idx = [i for i in player_indices if df.loc[i, 'Is_Pitcher']]
+        batter_idx = [i for i in player_indices if not df.loc[i, 'Is_Pitcher']]
+        prob += pulp.lpSum([y[i] for i in pitcher_idx]) == 3
+        prob += pulp.lpSum([y[i] for i in batter_idx]) == 2
 
     # LOCK PLAYERS TO SPECIFIC SLOTS CONSTRAINT
     if locked_slots:
@@ -817,7 +824,11 @@ with st.sidebar:
     num_lineups = st.slider("Number of Lineups", 1, 10, 3)
     
     default_min_proj = 1.5 if selected_sport == 'nhl' else 0.0
-    min_projection = st.slider("Min Base Projection", 0.0, 25.0, default_min_proj, step=0.1, help="Exclude players with a base projection lower than this value.")
+    min_projection = st.slider("Min Base Projection", 0.0, 25.0, default_min_proj, step=0.1, help="Exclude players with a base projection lower than this value (applies to Batters in MLB).")
+    
+    min_pitcher_proj = 0.0
+    if selected_sport == 'mlb':
+        min_pitcher_proj = st.slider("Min Pitcher Base Projection", 0.0, 50.0, 10.0, step=0.5, help="Exclude pitchers with a base projection lower than this value.")
     
     min_proj_min = 0
     if selected_sport == 'ncaam':
@@ -1316,6 +1327,12 @@ with app_tab:
                     merged_df['Slot 4 (1.4x)'] = (merged_df['Boost'] + 1.4) * merged_df['Projection']
                     merged_df['Slot 5 (1.2x)'] = (merged_df['Boost'] + 1.2) * merged_df['Projection']
 
+                    if selected_sport == 'mlb':
+                        if 'inningsPitched' in merged_df.columns:
+                            merged_df['Is_Pitcher'] = pd.to_numeric(merged_df['inningsPitched'], errors='coerce').fillna(0) > 0
+                        else:
+                            merged_df['Is_Pitcher'] = False
+
                     # NEW: Restricting columns visually in tabs per user request (added slot values)
                     display_cols = ['Player Name', 'Boost', 'Injury', 'Projection', 'Optimization Score', 'Slot 1 (2.0x)', 'Slot 2 (1.8x)', 'Slot 3 (1.6x)', 'Slot 4 (1.4x)', 'Slot 5 (1.2x)']
                     
@@ -1354,7 +1371,14 @@ with app_tab:
                             best_value_df = best_value_df[~((best_value_df['inningsPitched'] > 0) & (best_value_df['gamesStarted'] < 1))]
                             
                         # Apply adjustable minimum projection filter
-                        best_value_df = best_value_df[best_value_df['Projection'] >= min_projection]
+                        if selected_sport == 'mlb' and 'Is_Pitcher' in best_value_df.columns:
+                            proj_mask = (
+                                (best_value_df['Is_Pitcher'] & (best_value_df['Projection'] >= min_pitcher_proj)) |
+                                (~best_value_df['Is_Pitcher'] & (best_value_df['Projection'] >= min_projection))
+                            )
+                            best_value_df = best_value_df[proj_mask]
+                        else:
+                            best_value_df = best_value_df[best_value_df['Projection'] >= min_projection]
                             
                         st.dataframe(
                             best_value_df[available_cols].sort_values('Optimization Score', ascending=False).head(50), 
@@ -1394,11 +1418,16 @@ with app_tab:
                             filtered_df = filtered_df[filtered_df['Game'].isin(selected_games)]
                             
                         # CRITICAL FIX: Automatically drop strictly 'OUT' players AND players below the adjustable min projection
-                        opt_df = filtered_df[
-                            (~filtered_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])) & 
-                            (filtered_df['Projection'] >= min_projection) &
-                            (filtered_df['Projection'] > 0)
-                        ].copy()
+                        base_mask = (~filtered_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])) & (filtered_df['Projection'] > 0)
+                        
+                        if selected_sport == 'mlb' and 'Is_Pitcher' in filtered_df.columns:
+                            proj_mask = (
+                                (filtered_df['Is_Pitcher'] & (filtered_df['Projection'] >= min_pitcher_proj)) |
+                                (~filtered_df['Is_Pitcher'] & (filtered_df['Projection'] >= min_projection))
+                            )
+                            opt_df = filtered_df[base_mask & proj_mask].copy()
+                        else:
+                            opt_df = filtered_df[base_mask & (filtered_df['Projection'] >= min_projection)].copy()
                         
                         # APPLY MLB NON-STARTER FILTER TO OPTIMIZER
                         if selected_sport == 'mlb' and 'gamesStarted' in opt_df.columns and 'inningsPitched' in opt_df.columns:
@@ -1407,12 +1436,12 @@ with app_tab:
                         if selected_sport == 'nhl':
                             st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured & proj < {min_projection})")
                         elif selected_sport == 'mlb':
-                            st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured, proj < {min_projection}, & non-starting pitchers)")
+                            st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured, batters < {min_projection}, pitchers < {min_pitcher_proj}, & non-starting pitchers)")
                         else:
                             st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured & proj < {min_projection})")
 
                         if st.button("Generate Optimal Lineups"):
-                            lineups = run_optimization(opt_df, num_lineups)
+                            lineups = run_optimization(opt_df, num_lineups, sport=selected_sport)
                             if lineups:
                                 for idx, lineup in enumerate(lineups):
                                     total_score = lineup['Optimization Score'].sum()
@@ -1487,12 +1516,18 @@ with app_tab:
                                 builder_df = merged_df.copy()
                                 
                                 # Filter out strictly OUT players and those below min_projection for the assistant pool (unless locked manually)
-                                builder_df = builder_df[
-                                    ((~builder_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])) & 
-                                     (builder_df['Projection'] >= min_projection) &
-                                     (builder_df['Projection'] > 0)) | 
-                                    builder_df['Player Name'].isin(selected_locked_names)
-                                ]
+                                base_mask = (~builder_df['Injury'].astype(str).str.strip().str.upper().isin(['O', 'OUT', 'IR', 'INJ'])) & (builder_df['Projection'] > 0)
+                                
+                                if selected_sport == 'mlb' and 'Is_Pitcher' in builder_df.columns:
+                                    proj_mask = (
+                                        (builder_df['Is_Pitcher'] & (builder_df['Projection'] >= min_pitcher_proj)) |
+                                        (~builder_df['Is_Pitcher'] & (builder_df['Projection'] >= min_projection))
+                                    )
+                                    valid_pool = builder_df[base_mask & proj_mask]
+                                else:
+                                    valid_pool = builder_df[base_mask & (builder_df['Projection'] >= min_projection)]
+                                    
+                                builder_df = builder_df[builder_df.index.isin(valid_pool.index) | builder_df['Player Name'].isin(selected_locked_names)]
 
                                 # APPLY MLB NON-STARTER FILTER TO ASSISTANT (allow locked players to bypass filter)
                                 if selected_sport == 'mlb' and 'gamesStarted' in builder_df.columns and 'inningsPitched' in builder_df.columns:
@@ -1504,7 +1539,7 @@ with app_tab:
                                 if assistant_excluded:
                                     builder_df = builder_df[~builder_df['Player Name'].isin(assistant_excluded)]
                                     
-                                built_lineups = run_optimization(builder_df, b_num_lineups, locked_slots=locked_slots)
+                                built_lineups = run_optimization(builder_df, b_num_lineups, locked_slots=locked_slots, sport=selected_sport)
                                 if built_lineups:
                                     for idx, lineup in enumerate(built_lineups):
                                         total_score = lineup['Optimization Score'].sum()
