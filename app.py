@@ -188,7 +188,8 @@ SPORT_PROJECTION_URLS = {
     "nfl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1180552482&single=true&output=csv",
     "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv",
     "ncaam": "", # Empty to force "Boosts Only" display for CBB
-    "mlb": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=44331943&single=true&output=csv"
+    "mlb": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=44331943&single=true&output=csv",
+    "golf": ""   # Empty to force "Boosts Only" display for Golf
 }
 
 NHL_LINES_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=15374641&single=true&output=csv"
@@ -773,7 +774,7 @@ def run_optimization(df, num_lineups=1, locked_slots=None, sport=""):
 # --- Sidebar: Configuration ---
 with st.sidebar:
     st.header("1. Boost Data")
-    selected_sport = st.selectbox("Select League", ["nba", "nhl", "nfl", "ncaam", "mlb"], index=0)
+    selected_sport = st.selectbox("Select League", ["nba", "nhl", "nfl", "ncaam", "mlb", "golf"], index=0)
     
     # --- AUTO-CLEAR STALE PROJECTIONS ---
     if 'current_sport' not in st.session_state:
@@ -809,7 +810,7 @@ with st.sidebar:
             st.success(f"✅ URL Configured for {sport_key.upper()}")
             st.caption(f"Source: {url[:40]}...")
             current_proj_url = url
-        elif sport_key in ["ncaam"]:
+        elif sport_key in ["ncaam", "golf"]:
              st.info(f"ℹ️ No auto-projections for {sport_key.upper()}. Fetching boosts only unless you upload CSV or paste text.")
         else:
             st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
