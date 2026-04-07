@@ -189,7 +189,12 @@ SPORT_PROJECTION_URLS = {
     "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv",
     "ncaam": "", # Empty to force "Boosts Only" display for CBB
     "mlb": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=44331943&single=true&output=csv",
-    "golf": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1539073771&single=true&output=csv"   # Empty to force "Boosts Only" display for Golf
+    "golf": ""   # Empty to force "Boosts Only" display for Golf
+}
+
+# PARTICIPANT LIST SOURCES (Google Sheet Links with Names Only)
+SPORT_PARTICIPANT_URLS = {
+    "golf": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1539073771&single=true&output=csv"
 }
 
 NHL_LINES_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=15374641&single=true&output=csv"
@@ -836,11 +841,7 @@ with st.sidebar:
         st.subheader("CBB Filters")
         min_proj_min = st.slider("Min Projected Minutes", 0, 40, 5, help="Filter out players with very low projected minutes.")
 
-    st.header("4. Participant Filter (Optional)")
-    st.write("Only display and optimize specific players. Supports 'First Last' or 'Last, First'.")
-    participant_file = st.file_uploader("Upload Names (CSV/TXT)", type=["csv", "txt"], key="part_file")
-    participant_text = st.text_area("Or paste names (one per line, or comma separated)", height=100, key="part_text")
-    
+    st.header("4. Participant Filter")
     allowed_participants = set()
     
     def process_participant_data(raw_data):
@@ -865,15 +866,18 @@ with st.sidebar:
                 # No commas, assume "First Last"
                 allowed_participants.add(normalize_name(line))
 
-    if participant_file is not None:
+    part_url = SPORT_PARTICIPANT_URLS.get(selected_sport.lower())
+    if part_url:
+        st.caption("Auto-fetching participants from configured CSV...")
         try:
-            content = participant_file.getvalue().decode('utf-8')
-            process_participant_data(content)
+            r = requests.get(part_url, timeout=10)
+            if r.status_code == 200:
+                process_participant_data(r.text)
+                st.success("✅ Participant List Loaded")
         except Exception as e:
-            pass
-            
-    if participant_text:
-        process_participant_data(participant_text)
+            st.error("Failed to load participant CSV.")
+    else:
+        st.caption("No participant list configured for this sport.")
 
 
 # --- TOP LEVEL TABS ---
