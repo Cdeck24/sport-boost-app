@@ -189,11 +189,6 @@ SPORT_PROJECTION_URLS = {
     "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv",
     "ncaam": "", # Empty to force "Boosts Only" display for CBB
     "mlb": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=44331943&single=true&output=csv",
-    "golf": ""   # Empty to force "Boosts Only" display for Golf
-}
-
-# PARTICIPANT LIST SOURCES (Google Sheet Links with Names Only)
-SPORT_PARTICIPANT_URLS = {
     "golf": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1539073771&single=true&output=csv"
 }
 
@@ -219,7 +214,7 @@ PLAYER_NAME_MAPPINGS = {
 # --- Page Configuration ---
 st.set_page_config(page_title="Player Boost & Optimizer", layout="wide")
 
-st.title("🏀 🏒 ⚾ Player Boost & Lineup Optimizer")
+st.title("🏀 🏒 ⚾ ⛳ Player Boost & Lineup Optimizer")
 st.markdown("""
 This tool fetches live **Boost Multipliers** from the API and allows you to merge them with 
 **Fantasy Projections** to find the highest-scoring lineups using **Slot-Based Optimization**.
@@ -252,6 +247,12 @@ def normalize_name(name):
     if not isinstance(name, str):
         name = str(name)
     n = name.lower().strip()
+    
+    # Handle "Last, First" automatically if a comma exists (for Golf sheets, etc)
+    if ',' in n and n.count(',') == 1:
+        parts = n.split(',')
+        n = f"{parts[1].strip()} {parts[0].strip()}"
+        
     try:
         n = unicodedata.normalize('NFKD', n).encode('ascii', 'ignore').decode('utf-8')
     except Exception:
@@ -294,6 +295,43 @@ def find_col(columns, keywords):
             return col
             
     return None
+
+def parse_odds_to_prob(odds_str):
+    """Safely parses positive american, negative american, fractional, and text odds to implied probability."""
+    if pd.isna(odds_str): 
+        return 0.0
+    s = str(odds_str).strip().lower()
+    if not s: return 0.0
+    if s in ['even', 'ev']: return 0.5
+    
+    # Check for fractional (e.g., "17-1" or "17/1")
+    if '-' in s and not s.startswith('-'):
+        parts = s.split('-')
+        if len(parts) == 2:
+            try:
+                num = float(parts[0])
+                den = float(parts[1])
+                return den / (num + den)
+            except: return 0.0
+    if '/' in s:
+        parts = s.split('/')
+        if len(parts) == 2:
+            try:
+                num = float(parts[0])
+                den = float(parts[1])
+                return den / (num + den)
+            except: return 0.0
+            
+    # American Odds processing
+    s = s.replace('+', '')
+    try:
+        val = float(s)
+        if val < 0:
+            return abs(val) / (abs(val) + 100.0)
+        else:
+            return 100.0 / (val + 100.0)
+    except:
+        return 0.0
 
 def standardize_boost_columns(df):
     """Ensures the DataFrame has the standard column names used by the app."""
@@ -527,6 +565,27 @@ def calculate_mlb_custom_rating(row, mapping):
         pitching_score += stats.get('saves', 0) * 0.05
 
     return round(hitting_score + pitching_score, 2)
+
+
+def calculate_golf_custom_rating(row, mapping):
+    """Calculates an expected value score based on implied probabilities of finishing positions."""
+    prob_win = parse_odds_to_prob(row.get(mapping.get('to_win')))
+    prob_t5 = parse_odds_to_prob(row.get(mapping.get('top_5')))
+    prob_t10 = parse_odds_to_prob(row.get(mapping.get('top_10')))
+    prob_t20 = parse_odds_to_prob(row.get(mapping.get('top_20')))
+    prob_t40 = parse_odds_to_prob(row.get(mapping.get('top_40')))
+    prob_cut = parse_odds_to_prob(row.get(mapping.get('make_cut')))
+
+    # Weighted points based on probability to create a solid projection proxy score
+    score = (
+        (prob_win * 50) +
+        (prob_t5 * 30) +
+        (prob_t10 * 20) +
+        (prob_t20 * 15) +
+        (prob_t40 * 10) +
+        (prob_cut * 20) 
+    )
+    return round(score, 2)
 
 
 def fetch_letter(session, sport, date_str, query_str):
@@ -815,7 +874,7 @@ with st.sidebar:
             st.success(f"✅ URL Configured for {sport_key.upper()}")
             st.caption(f"Source: {url[:40]}...")
             current_proj_url = url
-        elif sport_key in ["ncaam", "golf"]:
+        elif sport_key in ["ncaam"]:
              st.info(f"ℹ️ No auto-projections for {sport_key.upper()}. Fetching boosts only unless you upload CSV or paste text.")
         else:
             st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
@@ -840,44 +899,6 @@ with st.sidebar:
     if selected_sport == 'ncaam':
         st.subheader("CBB Filters")
         min_proj_min = st.slider("Min Projected Minutes", 0, 40, 5, help="Filter out players with very low projected minutes.")
-
-    st.header("4. Participant Filter")
-    allowed_participants = set()
-    
-    def process_participant_data(raw_data):
-        # Remove quotes if someone uploaded a strict CSV where "Last, First" is quoted
-        raw_data = raw_data.replace('"', '')
-        for line in raw_data.split('\n'):
-            line = line.strip()
-            if not line:
-                continue
-            # If the line looks like exactly "Last, First"
-            if line.count(',') == 1:
-                parts = line.split(',')
-                # Swap to "First Last"
-                reconstructed_name = f"{parts[1].strip()} {parts[0].strip()}"
-                allowed_participants.add(normalize_name(reconstructed_name))
-            elif line.count(',') > 1:
-                # Assume it's a comma-separated list of multiple names: "Tiger Woods, Rory McIlroy"
-                for name_part in line.split(','):
-                    if name_part.strip():
-                        allowed_participants.add(normalize_name(name_part.strip()))
-            else:
-                # No commas, assume "First Last"
-                allowed_participants.add(normalize_name(line))
-
-    part_url = SPORT_PARTICIPANT_URLS.get(selected_sport.lower())
-    if part_url:
-        st.caption("Auto-fetching participants from configured CSV...")
-        try:
-            r = requests.get(part_url, timeout=10)
-            if r.status_code == 200:
-                process_participant_data(r.text)
-                st.success("✅ Participant List Loaded")
-        except Exception as e:
-            st.error("Failed to load participant CSV.")
-    else:
-        st.caption("No participant list configured for this sport.")
 
 
 # --- TOP LEVEL TABS ---
@@ -1259,6 +1280,20 @@ with app_tab:
                     df_proj['inningsPitched'] = pd.to_numeric(df_proj[mlb_cols_map["inningsPitched"]], errors='coerce').fillna(0)
                 else:
                     df_proj['inningsPitched'] = 0
+                    
+            if selected_sport == "golf":
+                golf_cols_map = {
+                    "to_win": find_col(df_proj.columns, ["to win", "win"]),
+                    "top_5": find_col(df_proj.columns, ["top 5", "t5"]),
+                    "top_10": find_col(df_proj.columns, ["top 10", "t10"]),
+                    "top_20": find_col(df_proj.columns, ["top 20", "t20"]),
+                    "top_40": find_col(df_proj.columns, ["top 40", "t40"]),
+                    "make_cut": find_col(df_proj.columns, ["make cut", "cut"])
+                }
+                if any(v is not None for v in golf_cols_map.values()):
+                    df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_golf_custom_rating(row, golf_cols_map), axis=1)
+                    points_col = 'Calculated_Rating'
+                    st.success("✅ Golf Odds Implied Probability Rating Applied")
 
             
             if selected_sport == "nhl":
@@ -1377,11 +1412,6 @@ with app_tab:
                         else:
                             merged_df['Is_Pitcher'] = False
 
-                    if allowed_participants:
-                        merged_df['norm_for_filter'] = merged_df['Player Name'].astype(str).apply(normalize_name)
-                        merged_df = merged_df[merged_df['norm_for_filter'].isin(allowed_participants)].drop(columns=['norm_for_filter'])
-                        st.success(f"🎯 Participant Filter Active: {len(merged_df)} players matched.")
-
                     # NEW: Restricting columns visually in tabs per user request (added slot values)
                     display_cols = ['Player Name', 'Boost', 'Injury', 'Projection', 'Optimization Score', 'Slot 1 (2.0x)', 'Slot 2 (1.8x)', 'Slot 3 (1.6x)', 'Slot 4 (1.4x)', 'Slot 5 (1.2x)']
                     
@@ -1391,6 +1421,13 @@ with app_tab:
                         pp_col = find_col(merged_df.columns, ["pp_line"])
                         if pp_col: display_cols.insert(3, pp_col)
                         if rl_col: display_cols.insert(3, rl_col)
+                        
+                    # Add Golf odds data into the visual display if it exists
+                    if selected_sport == 'golf':
+                        for c_key in ["to_win", "top_5", "top_10", "top_20", "top_40", "make_cut"]:
+                            c_name = golf_cols_map.get(c_key)
+                            if c_name and c_name in merged_df.columns:
+                                display_cols.insert(4, c_name)
 
                     tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Data Browser", "💎 Best Value", "🚀 Lineup Optimizer", "🧩 Lineup Assistant", "🧪 Lineup Tester"])
                     
@@ -1697,8 +1734,12 @@ with app_tab:
                 else:
                     st.write("Since no projections CSV is available, showing just the raw API boost data.")
                     
+                cols_to_show = ['Player Name', 'Boost', 'Position', 'Injury', 'Date']
+                if selected_sport == 'golf':
+                    cols_to_show = ['Player Name', 'Boost', 'Position']
+                    
                 st.dataframe(
-                    display_boosts[['Player Name', 'Boost', 'Position', 'Injury', 'Date']], 
+                    display_boosts[cols_to_show], 
                     use_container_width=True
                 )
             else:
