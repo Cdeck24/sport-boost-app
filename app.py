@@ -837,24 +837,43 @@ with st.sidebar:
         min_proj_min = st.slider("Min Projected Minutes", 0, 40, 5, help="Filter out players with very low projected minutes.")
 
     st.header("4. Participant Filter (Optional)")
-    st.write("Only display and optimize specific players.")
+    st.write("Only display and optimize specific players. Supports 'First Last' or 'Last, First'.")
     participant_file = st.file_uploader("Upload Names (CSV/TXT)", type=["csv", "txt"], key="part_file")
-    participant_text = st.text_area("Or paste names (comma or line separated)", height=100, key="part_text")
+    participant_text = st.text_area("Or paste names (one per line, or comma separated)", height=100, key="part_text")
     
     allowed_participants = set()
+    
+    def process_participant_data(raw_data):
+        # Remove quotes if someone uploaded a strict CSV where "Last, First" is quoted
+        raw_data = raw_data.replace('"', '')
+        for line in raw_data.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            # If the line looks like exactly "Last, First"
+            if line.count(',') == 1:
+                parts = line.split(',')
+                # Swap to "First Last"
+                reconstructed_name = f"{parts[1].strip()} {parts[0].strip()}"
+                allowed_participants.add(normalize_name(reconstructed_name))
+            elif line.count(',') > 1:
+                # Assume it's a comma-separated list of multiple names: "Tiger Woods, Rory McIlroy"
+                for name_part in line.split(','):
+                    if name_part.strip():
+                        allowed_participants.add(normalize_name(name_part.strip()))
+            else:
+                # No commas, assume "First Last"
+                allowed_participants.add(normalize_name(line))
+
     if participant_file is not None:
         try:
-            df_parts = pd.read_csv(participant_file, header=None)
-            for val in df_parts.values.flatten():
-                if pd.notna(val) and str(val).strip():
-                    allowed_participants.add(normalize_name(str(val)))
-        except:
+            content = participant_file.getvalue().decode('utf-8')
+            process_participant_data(content)
+        except Exception as e:
             pass
+            
     if participant_text:
-        for line in participant_text.split('\n'):
-            for name in line.split(','):
-                if name.strip():
-                    allowed_participants.add(normalize_name(name.strip()))
+        process_participant_data(participant_text)
 
 
 # --- TOP LEVEL TABS ---
@@ -1664,9 +1683,18 @@ with app_tab:
             # --- CASE B: BOOSTS ONLY (No Projections) ---
             if not sport_boosts.empty:
                 st.subheader(f"Raw Boosts for {selected_sport.upper()} (No Projections Found)")
-                st.write("Since no projections CSV is available, showing just the raw API boost data.")
+                
+                # Check for golf/participant filters for boosts only mode too
+                display_boosts = sport_boosts.copy()
+                if allowed_participants:
+                     display_boosts['norm_for_filter'] = display_boosts['Player Name'].astype(str).apply(normalize_name)
+                     display_boosts = display_boosts[display_boosts['norm_for_filter'].isin(allowed_participants)].drop(columns=['norm_for_filter'])
+                     st.success(f"🎯 Participant Filter Active: {len(display_boosts)} players matched.")
+                else:
+                    st.write("Since no projections CSV is available, showing just the raw API boost data.")
+                    
                 st.dataframe(
-                    sport_boosts[['Player Name', 'Boost', 'Position', 'Injury', 'Date']], 
+                    display_boosts[['Player Name', 'Boost', 'Position', 'Injury', 'Date']], 
                     use_container_width=True
                 )
             else:
