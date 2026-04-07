@@ -189,7 +189,7 @@ SPORT_PROJECTION_URLS = {
     "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv",
     "ncaam": "", # Empty to force "Boosts Only" display for CBB
     "mlb": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=44331943&single=true&output=csv",
-    "golf": ""   # Empty to force "Boosts Only" display for Golf
+    "golf": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1539073771&single=true&output=csv"   # Empty to force "Boosts Only" display for Golf
 }
 
 NHL_LINES_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=15374641&single=true&output=csv"
@@ -836,6 +836,26 @@ with st.sidebar:
         st.subheader("CBB Filters")
         min_proj_min = st.slider("Min Projected Minutes", 0, 40, 5, help="Filter out players with very low projected minutes.")
 
+    st.header("4. Participant Filter (Optional)")
+    st.write("Only display and optimize specific players.")
+    participant_file = st.file_uploader("Upload Names (CSV/TXT)", type=["csv", "txt"], key="part_file")
+    participant_text = st.text_area("Or paste names (comma or line separated)", height=100, key="part_text")
+    
+    allowed_participants = set()
+    if participant_file is not None:
+        try:
+            df_parts = pd.read_csv(participant_file, header=None)
+            for val in df_parts.values.flatten():
+                if pd.notna(val) and str(val).strip():
+                    allowed_participants.add(normalize_name(str(val)))
+        except:
+            pass
+    if participant_text:
+        for line in participant_text.split('\n'):
+            for name in line.split(','):
+                if name.strip():
+                    allowed_participants.add(normalize_name(name.strip()))
+
 
 # --- TOP LEVEL TABS ---
 app_tab, formula_tester_tab = st.tabs(["🚀 Main App", "🧮 Formula Tester"])
@@ -1333,6 +1353,11 @@ with app_tab:
                             merged_df['Is_Pitcher'] = pd.to_numeric(merged_df['inningsPitched'], errors='coerce').fillna(0) > 0
                         else:
                             merged_df['Is_Pitcher'] = False
+
+                    if allowed_participants:
+                        merged_df['norm_for_filter'] = merged_df['Player Name'].astype(str).apply(normalize_name)
+                        merged_df = merged_df[merged_df['norm_for_filter'].isin(allowed_participants)].drop(columns=['norm_for_filter'])
+                        st.success(f"🎯 Participant Filter Active: {len(merged_df)} players matched.")
 
                     # NEW: Restricting columns visually in tabs per user request (added slot values)
                     display_cols = ['Player Name', 'Boost', 'Injury', 'Projection', 'Optimization Score', 'Slot 1 (2.0x)', 'Slot 2 (1.8x)', 'Slot 3 (1.6x)', 'Slot 4 (1.4x)', 'Slot 5 (1.2x)']
