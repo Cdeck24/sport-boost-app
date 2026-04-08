@@ -1725,21 +1725,14 @@ with app_tab:
             if not sport_boosts.empty:
                 st.subheader(f"Raw Boosts for {selected_sport.upper()} (No Projections Found)")
                 
-                # Check for golf/participant filters for boosts only mode too
-                display_boosts = sport_boosts.copy()
-                if allowed_participants:
-                     display_boosts['norm_for_filter'] = display_boosts['Player Name'].astype(str).apply(normalize_name)
-                     display_boosts = display_boosts[display_boosts['norm_for_filter'].isin(allowed_participants)].drop(columns=['norm_for_filter'])
-                     st.success(f"🎯 Participant Filter Active: {len(display_boosts)} players matched.")
-                else:
-                    st.write("Since no projections CSV is available, showing just the raw API boost data.")
+                st.write("Since no projections CSV is available, showing just the raw API boost data.")
                     
                 cols_to_show = ['Player Name', 'Boost', 'Position', 'Injury', 'Date']
                 if selected_sport == 'golf':
                     cols_to_show = ['Player Name', 'Boost', 'Position']
                     
                 st.dataframe(
-                    display_boosts[cols_to_show], 
+                    sport_boosts[cols_to_show], 
                     use_container_width=True
                 )
             else:
