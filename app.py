@@ -874,7 +874,7 @@ with st.sidebar:
             st.success(f"✅ URL Configured for {sport_key.upper()}")
             st.caption(f"Source: {url[:40]}...")
             current_proj_url = url
-        elif sport_key in ["ncaam"]:
+        elif sport_key in ["ncaam", "golf"]:
              st.info(f"ℹ️ No auto-projections for {sport_key.upper()}. Fetching boosts only unless you upload CSV or paste text.")
         else:
             st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
@@ -1150,6 +1150,7 @@ with app_tab:
 
     # 3. Merging & Optimization
     df_boosts = boost_store.get()
+    allowed_participants = set()
 
     proceed = False
     if not df_boosts.empty:
@@ -1175,6 +1176,10 @@ with app_tab:
                 name_col = 'Calculated_Full_Name'
             else:
                 name_col = find_col(df_proj.columns, ["player", "name", "who"])
+
+            # Dynamically set allowed participants if names exist in the provided CSV
+            if name_col:
+                allowed_participants = set(df_proj[name_col].dropna().astype(str).apply(normalize_name))
 
             # --- NHL SECONDARY LINES CSV MERGE ---
             if selected_sport == 'nhl' and input_method == "Use Global/Public Projections" and name_col:
@@ -1411,6 +1416,11 @@ with app_tab:
                             merged_df['Is_Pitcher'] = pd.to_numeric(merged_df['inningsPitched'], errors='coerce').fillna(0) > 0
                         else:
                             merged_df['Is_Pitcher'] = False
+
+                    if allowed_participants:
+                        merged_df['norm_for_filter'] = merged_df['Player Name'].astype(str).apply(normalize_name)
+                        merged_df = merged_df[merged_df['norm_for_filter'].isin(allowed_participants)].drop(columns=['norm_for_filter'])
+                        st.success(f"🎯 Participant Filter Active: {len(merged_df)} players matched.")
 
                     # NEW: Restricting columns visually in tabs per user request (added slot values)
                     display_cols = ['Player Name', 'Boost', 'Injury', 'Projection', 'Optimization Score', 'Slot 1 (2.0x)', 'Slot 2 (1.8x)', 'Slot 3 (1.6x)', 'Slot 4 (1.4x)', 'Slot 5 (1.2x)']
@@ -1720,8 +1730,34 @@ with app_tab:
                                     use_container_width=True,
                                     hide_index=True
                                 )
+            
+            else:
+                # --- CASE B: BOOSTS ONLY (Fallback) ---
+                if not sport_boosts.empty:
+                    st.subheader(f"Raw Boosts for {selected_sport.upper()}")
+                    
+                    # Check for participant filters for boosts only mode too
+                    display_boosts = sport_boosts.copy()
+                    if allowed_participants:
+                         display_boosts['norm_for_filter'] = display_boosts['Player Name'].astype(str).apply(normalize_name)
+                         display_boosts = display_boosts[display_boosts['norm_for_filter'].isin(allowed_participants)].drop(columns=['norm_for_filter'])
+                         st.success(f"🎯 Participant Filter Active: {len(display_boosts)} players matched.")
+                    else:
+                        st.write("Showing the raw API boost data.")
+                        
+                    cols_to_show = ['Player Name', 'Boost', 'Position', 'Injury', 'Date']
+                    if selected_sport == 'golf':
+                        cols_to_show = ['Player Name', 'Boost', 'Position']
+                        
+                    st.dataframe(
+                        display_boosts[cols_to_show], 
+                        use_container_width=True
+                    )
+                else:
+                    st.info("Waiting for data fetch...")
+
         else:
-            # --- CASE B: BOOSTS ONLY (No Projections) ---
+            # --- CASE B: BOOSTS ONLY (No Projections provided at all) ---
             if not sport_boosts.empty:
                 st.subheader(f"Raw Boosts for {selected_sport.upper()} (No Projections Found)")
                 
