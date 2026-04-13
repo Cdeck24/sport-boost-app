@@ -1365,6 +1365,10 @@ with app_tab:
                     
                 merged_df['Position'] = merged_df['Position'].fillna('UNKNOWN').apply(normalize_position)
                 
+                # Convert Position to numeric for Golf so it sorts properly (1, 2, 3 instead of 1, 10, 2)
+                if selected_sport == 'golf':
+                    merged_df['Position'] = pd.to_numeric(merged_df['Position'], errors='coerce').astype('Int64')
+                
                 merged_df['Injury'] = merged_df['Injury'].fillna('')
                 merged_df['Sport'] = merged_df['Sport'].fillna(selected_sport.upper())
 
@@ -1745,6 +1749,9 @@ with app_tab:
                     else:
                         st.write("Showing the raw API boost data.")
                         
+                    if selected_sport == 'golf':
+                        display_boosts['Position'] = pd.to_numeric(display_boosts['Position'], errors='coerce').astype('Int64')
+                        
                     cols_to_show = ['Player Name', 'Boost', 'Position', 'Injury', 'Date']
                     if selected_sport == 'golf':
                         cols_to_show = ['Player Name', 'Boost', 'Position']
@@ -1762,13 +1769,19 @@ with app_tab:
                 st.subheader(f"Raw Boosts for {selected_sport.upper()} (No Projections Found)")
                 
                 st.write("Since no projections CSV is available, showing just the raw API boost data.")
+                
+                display_boosts = sport_boosts.copy()
+                
+                # Fix Golf numerical sorting
+                if selected_sport == 'golf':
+                    display_boosts['Position'] = pd.to_numeric(display_boosts['Position'], errors='coerce').astype('Int64')
                     
                 cols_to_show = ['Player Name', 'Boost', 'Position', 'Injury', 'Date']
                 if selected_sport == 'golf':
                     cols_to_show = ['Player Name', 'Boost', 'Position']
                     
                 st.dataframe(
-                    sport_boosts[cols_to_show], 
+                    display_boosts[cols_to_show], 
                     use_container_width=True
                 )
             else:
