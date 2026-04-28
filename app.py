@@ -546,9 +546,9 @@ def calculate_mlb_custom_rating(row, mapping):
     
     # Pitcher check: Must have IP or Pitching stats AND be a starter
     if (ip > 0 or stats.get('saves', 0) > 0 or stats.get('wins', 0) > 0) and gs >= 1:
-        full_innings = int(ip)
-        partial_innings = round((ip - full_innings) * 10) 
-        p_outs = (full_innings * 3) + partial_innings
+        # Corrected Outs Logic: Treats IP as a mathematical average of innings.
+        # 4.8 IP results in 14.4 outs (4.8 * 3.0), awarding partial credit for mathematical averages.
+        p_outs = ip * 3.0
         
         pitching_score += p_outs * 0.38
         pitching_score += stats.get('strikeouts_pitching', 0) * 0.07 
@@ -901,7 +901,7 @@ with st.sidebar:
     num_lineups = st.slider("Number of Lineups", 1, 10, 3)
     
     default_min_proj = 1.5 if selected_sport == 'nhl' else 0.0
-    min_projection = st.slider("Min Base Projection", 0.0, 25.0, default_min_proj, step=0.1, help="Exclude players with a base projection lower than this value (applies to Batters in MLB).")
+    min_projection = st.slider("Min Base Projection", 0.0, 7.0, default_min_proj, step=0.1, help="Exclude players with a base projection lower than this value (applies to Batters in MLB).")
     
     min_pitcher_proj = 0.0
     mlb_roster_rule = "Flexible (Highest Projected)"
@@ -1696,11 +1696,11 @@ with app_tab:
                             t_s1 = st.selectbox("Slot 1 (2.0x)", test_names, key="test_s1")
                         with t_colB:
                             t_s2 = st.selectbox("Slot 2 (1.8x)", test_names, key="test_s2")
-                        with t_colC:
+                        with colC:
                             t_s3 = st.selectbox("Slot 3 (1.6x)", test_names, key="test_s3")
-                        with t_colD:
+                        with colD:
                             t_s4 = st.selectbox("Slot 4 (1.4x)", test_names, key="test_s4")
-                        with t_colE:
+                        with colE:
                             t_s5 = st.selectbox("Slot 5 (1.2x)", test_names, key="test_s5")
                             
                         tester_selections = [t_s1, t_s2, t_s3, t_s4, t_s5]
