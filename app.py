@@ -906,7 +906,7 @@ with st.sidebar:
     min_pitcher_proj = 0.0
     mlb_roster_rule = "Flexible (Highest Projected)"
     if selected_sport == 'mlb':
-        min_pitcher_proj = st.slider("Min Pitcher Base Projection", 0.0, 50.0, 5.0, step=0.5, help="Exclude pitchers with a base projection lower than this value.")
+        min_pitcher_proj = st.slider("Min Pitcher Base Projection", 0.0, 7.0, 4.5, step=0.5, help="Exclude pitchers with a base projection lower than this value.")
         mlb_roster_rule = st.selectbox(
             "MLB Lineup Constraint",
             ["Flexible (Highest Projected)", "3 Pitchers / 2 Batters", "2 Pitchers / 3 Batters", "4 Pitchers / 1 Batter", "1 Pitcher / 4 Batters"],
