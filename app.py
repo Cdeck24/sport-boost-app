@@ -734,7 +734,7 @@ def load_projections_from_url(url):
     except Exception as e:
         return None, str(e)
 
-def run_optimization(df, num_lineups=1, locked_slots=None, sport=""):
+def run_optimization(df, num_lineups=1, locked_slots=None, sport="", mlb_rule="Flexible (Highest Projected)"):
     """Runs Assignment Problem solver with players locked into specific slots."""
     if locked_slots is None:
         locked_slots = {}
@@ -781,12 +781,24 @@ def run_optimization(df, num_lineups=1, locked_slots=None, sport=""):
     # Exactly NUM_SLOTS players selected total
     prob += pulp.lpSum([y[i] for i in player_indices]) == NUM_SLOTS
 
-    # MLB Constraint: 3 Pitchers, 2 Batters
-    if sport == 'mlb' and 'Is_Pitcher' in df.columns:
+    # MLB Constraint: Dynamic based on user selection
+    if sport == 'mlb' and 'Is_Pitcher' in df.columns and mlb_rule != "Flexible (Highest Projected)":
         pitcher_idx = [i for i in player_indices if df.loc[i, 'Is_Pitcher']]
         batter_idx = [i for i in player_indices if not df.loc[i, 'Is_Pitcher']]
-        prob += pulp.lpSum([y[i] for i in pitcher_idx]) == 3
-        prob += pulp.lpSum([y[i] for i in batter_idx]) == 2
+        
+        p_req, b_req = None, None
+        if mlb_rule == "3 Pitchers / 2 Batters":
+            p_req, b_req = 3, 2
+        elif mlb_rule == "2 Pitchers / 3 Batters":
+            p_req, b_req = 2, 3
+        elif mlb_rule == "4 Pitchers / 1 Batter":
+            p_req, b_req = 4, 1
+        elif mlb_rule == "1 Pitcher / 4 Batters":
+            p_req, b_req = 1, 4
+            
+        if p_req is not None and b_req is not None:
+            prob += pulp.lpSum([y[i] for i in pitcher_idx]) == p_req
+            prob += pulp.lpSum([y[i] for i in batter_idx]) == b_req
 
     # LOCK PLAYERS TO SPECIFIC SLOTS CONSTRAINT
     if locked_slots:
@@ -892,8 +904,15 @@ with st.sidebar:
     min_projection = st.slider("Min Base Projection", 0.0, 25.0, default_min_proj, step=0.1, help="Exclude players with a base projection lower than this value (applies to Batters in MLB).")
     
     min_pitcher_proj = 0.0
+    mlb_roster_rule = "Flexible (Highest Projected)"
     if selected_sport == 'mlb':
-        min_pitcher_proj = st.slider("Min Pitcher Base Projection", 0.0, 50.0, 10.0, step=0.5, help="Exclude pitchers with a base projection lower than this value.")
+        min_pitcher_proj = st.slider("Min Pitcher Base Projection", 0.0, 50.0, 5.0, step=0.5, help="Exclude pitchers with a base projection lower than this value.")
+        mlb_roster_rule = st.selectbox(
+            "MLB Lineup Constraint",
+            ["Flexible (Highest Projected)", "3 Pitchers / 2 Batters", "2 Pitchers / 3 Batters", "4 Pitchers / 1 Batter", "1 Pitcher / 4 Batters"],
+            index=0,
+            help="Force the optimizer to pick a specific ratio of Pitchers to Batters, or let it blindly choose the highest raw scores."
+        )
     
     min_proj_min = 0
     if selected_sport == 'ncaam':
@@ -1541,7 +1560,7 @@ with app_tab:
                             st.caption(f"Pool Size: {len(opt_df)} Players (excludes injured & proj < {min_projection})")
 
                         if st.button("Generate Optimal Lineups"):
-                            lineups = run_optimization(opt_df, num_lineups, sport=selected_sport)
+                            lineups = run_optimization(opt_df, num_lineups, sport=selected_sport, mlb_rule=mlb_roster_rule)
                             if lineups:
                                 for idx, lineup in enumerate(lineups):
                                     total_score = lineup['Optimization Score'].sum()
@@ -1639,7 +1658,7 @@ with app_tab:
                                 if assistant_excluded:
                                     builder_df = builder_df[~builder_df['Player Name'].isin(assistant_excluded)]
                                     
-                                built_lineups = run_optimization(builder_df, b_num_lineups, locked_slots=locked_slots, sport=selected_sport)
+                                built_lineups = run_optimization(builder_df, b_num_lineups, locked_slots=locked_slots, sport=selected_sport, mlb_rule=mlb_roster_rule)
                                 if built_lineups:
                                     for idx, lineup in enumerate(built_lineups):
                                         total_score = lineup['Optimization Score'].sum()
