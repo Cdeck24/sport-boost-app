@@ -185,6 +185,7 @@ HEADERS = build_headers(token)
 # PROJECTION SOURCES (Google Sheet Links)
 SPORT_PROJECTION_URLS = {
     "nba": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=0&single=true&output=csv", 
+    "wnba": "", # Empty to force "Boosts Only" display for WNBA unless provided
     "nfl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=1180552482&single=true&output=csv",
     "nhl": "https://docs.google.com/spreadsheets/d/e/2PACX-1vSnuLbwe_6u39hsVARUjkjA6iDbg8AFSkr2BBUoMqZBPBVFU-ilTjJ5lOvJ5Sxq-d28CohPCVKJYA01/pub?gid=401621588&single=true&output=csv",
     "ncaam": "", # Empty to force "Boosts Only" display for CBB
@@ -850,7 +851,7 @@ def run_optimization(df, num_lineups=1, locked_slots=None, sport="", mlb_rule="F
 # --- Sidebar: Configuration ---
 with st.sidebar:
     st.header("1. Boost Data")
-    selected_sport = st.selectbox("Select League", ["nba", "nhl", "nfl", "ncaam", "mlb", "golf"], index=0)
+    selected_sport = st.selectbox("Select League", ["nba", "wnba", "nhl", "nfl", "ncaam", "mlb", "golf"], index=0)
     
     # --- AUTO-CLEAR STALE PROJECTIONS ---
     if 'current_sport' not in st.session_state:
@@ -886,7 +887,7 @@ with st.sidebar:
             st.success(f"✅ URL Configured for {sport_key.upper()}")
             st.caption(f"Source: {url[:40]}...")
             current_proj_url = url
-        elif sport_key in ["ncaam", "golf"]:
+        elif sport_key in ["ncaam", "golf", "wnba"]:
              st.info(f"ℹ️ No auto-projections for {sport_key.upper()}. Fetching boosts only unless you upload CSV or paste text.")
         else:
             st.warning(f"⚠️ No URL configured for {sport_key.upper()}.")
@@ -901,12 +902,12 @@ with st.sidebar:
     num_lineups = st.slider("Number of Lineups", 1, 10, 3)
     
     default_min_proj = 1.5 if selected_sport == 'nhl' else 0.0
-    min_projection = st.slider("Min Base Projection", 0.0, 7.0, default_min_proj, step=0.1, help="Exclude players with a base projection lower than this value (applies to Batters in MLB).")
+    min_projection = st.slider("Min Base Projection", 0.0, 25.0, default_min_proj, step=0.1, help="Exclude players with a base projection lower than this value (applies to Batters in MLB).")
     
     min_pitcher_proj = 0.0
     mlb_roster_rule = "Flexible (Highest Projected)"
     if selected_sport == 'mlb':
-        min_pitcher_proj = st.slider("Min Pitcher Base Projection", 0.0, 7.0, 4.5, step=0.5, help="Exclude pitchers with a base projection lower than this value.")
+        min_pitcher_proj = st.slider("Min Pitcher Base Projection", 0.0, 50.0, 10.0, step=0.5, help="Exclude pitchers with a base projection lower than this value.")
         mlb_roster_rule = st.selectbox(
             "MLB Lineup Constraint",
             ["Flexible (Highest Projected)", "3 Pitchers / 2 Batters", "2 Pitchers / 3 Batters", "4 Pitchers / 1 Batter", "1 Pitcher / 4 Batters"],
@@ -929,10 +930,10 @@ with formula_tester_tab:
     st.header("🧮 Rating Formula Tester")
     st.write("Enter raw stats manually to verify how the custom efficiency formulas calculate player ratings.")
     
-    test_sport = st.selectbox("Select Sport Formula", ["NBA", "NHL", "MLB Batter", "MLB Pitcher", "CBB"])
+    test_sport = st.selectbox("Select Sport Formula", ["NBA", "WNBA", "NHL", "MLB Batter", "MLB Pitcher", "CBB"])
     
-    if test_sport == "NBA":
-        st.subheader("NBA Raw Stats")
+    if test_sport in ["NBA", "WNBA"]:
+        st.subheader(f"{test_sport} Raw Stats")
         c1, c2, c3, c4 = st.columns(4)
         fgm = c1.number_input("FGM", 0.0, step=1.0, key="t_fgm")
         fga = c2.number_input("FGA", 0.0, step=1.0, key="t_fga")
@@ -947,7 +948,7 @@ with formula_tester_tab:
         
         row = {'fgm': fgm, 'fga': fga, '3pm': tpm, 'ftm': ftm, 'fta': fta, 'reb': reb, 'ast': ast, 'stl': stl, 'blk': blk, 'to': tov}
         mapping = {k: k for k in row.keys()}
-        st.metric("Calculated NBA Rating", f"{calculate_nba_custom_rating(row, mapping):.2f}")
+        st.metric(f"Calculated {test_sport} Rating", f"{calculate_nba_custom_rating(row, mapping):.2f}")
         
     elif test_sport == "NHL":
         st.subheader("NHL Raw Stats")
@@ -1169,7 +1170,6 @@ with app_tab:
 
     # 3. Merging & Optimization
     df_boosts = boost_store.get()
-    allowed_participants = set()
 
     proceed = False
     if not df_boosts.empty:
@@ -1195,10 +1195,6 @@ with app_tab:
                 name_col = 'Calculated_Full_Name'
             else:
                 name_col = find_col(df_proj.columns, ["player", "name", "who"])
-
-            # Dynamically set allowed participants if names exist in the provided CSV
-            if name_col:
-                allowed_participants = set(df_proj[name_col].dropna().astype(str).apply(normalize_name))
 
             # --- NHL SECONDARY LINES CSV MERGE ---
             if selected_sport == 'nhl' and input_method == "Use Global/Public Projections" and name_col:
@@ -1245,7 +1241,7 @@ with app_tab:
 
             points_col = None 
             
-            if selected_sport == "nba":
+            if selected_sport in ["nba", "wnba"]:
                 nba_cols_map = {
                     "fgm": find_col(df_proj.columns, ["fieldGoalsMade", "fgm"]),
                     "fga": find_col(df_proj.columns, ["fieldGoalsAttempted", "fga"]),
@@ -1261,7 +1257,7 @@ with app_tab:
                 if all(v is not None for v in nba_cols_map.values()):
                     df_proj['Calculated_Rating'] = df_proj.apply(lambda row: calculate_nba_custom_rating(row, nba_cols_map), axis=1)
                     points_col = 'Calculated_Rating'
-                    st.success("✅ NBA Custom Efficiency Rating Applied")
+                    st.success(f"✅ {selected_sport.upper()} Custom Efficiency Rating Applied")
                     
             if selected_sport == "mlb":
                 mlb_cols_map = {
@@ -1439,11 +1435,6 @@ with app_tab:
                             merged_df['Is_Pitcher'] = pd.to_numeric(merged_df['inningsPitched'], errors='coerce').fillna(0) > 0
                         else:
                             merged_df['Is_Pitcher'] = False
-
-                    if allowed_participants:
-                        merged_df['norm_for_filter'] = merged_df['Player Name'].astype(str).apply(normalize_name)
-                        merged_df = merged_df[merged_df['norm_for_filter'].isin(allowed_participants)].drop(columns=['norm_for_filter'])
-                        st.success(f"🎯 Participant Filter Active: {len(merged_df)} players matched.")
 
                     # NEW: Restricting columns visually in tabs per user request (added slot values)
                     display_cols = ['Player Name', 'Boost', 'Injury', 'Projection', 'Optimization Score', 'Slot 1 (2.0x)', 'Slot 2 (1.8x)', 'Slot 3 (1.6x)', 'Slot 4 (1.4x)', 'Slot 5 (1.2x)']
@@ -1759,24 +1750,17 @@ with app_tab:
                 if not sport_boosts.empty:
                     st.subheader(f"Raw Boosts for {selected_sport.upper()}")
                     
-                    # Check for participant filters for boosts only mode too
-                    display_boosts = sport_boosts.copy()
-                    if allowed_participants:
-                         display_boosts['norm_for_filter'] = display_boosts['Player Name'].astype(str).apply(normalize_name)
-                         display_boosts = display_boosts[display_boosts['norm_for_filter'].isin(allowed_participants)].drop(columns=['norm_for_filter'])
-                         st.success(f"🎯 Participant Filter Active: {len(display_boosts)} players matched.")
-                    else:
-                        st.write("Showing the raw API boost data.")
+                    st.write("Showing the raw API boost data.")
                         
                     if selected_sport == 'golf':
-                        display_boosts['Position'] = pd.to_numeric(display_boosts['Position'], errors='coerce').astype('Int64')
+                        sport_boosts['Position'] = pd.to_numeric(sport_boosts['Position'], errors='coerce').astype('Int64')
                         
                     cols_to_show = ['Player Name', 'Boost', 'Position', 'Injury', 'Date']
                     if selected_sport == 'golf':
                         cols_to_show = ['Player Name', 'Boost', 'Position']
                         
                     st.dataframe(
-                        display_boosts[cols_to_show], 
+                        sport_boosts[cols_to_show], 
                         use_container_width=True
                     )
                 else:
