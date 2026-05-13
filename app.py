@@ -1170,6 +1170,8 @@ with app_tab:
 
     # 3. Merging & Optimization
     df_boosts = boost_store.get()
+    allowed_participants = set()
+    sport_boosts = pd.DataFrame()
 
     proceed = False
     if not df_boosts.empty:
@@ -1195,6 +1197,10 @@ with app_tab:
                 name_col = 'Calculated_Full_Name'
             else:
                 name_col = find_col(df_proj.columns, ["player", "name", "who"])
+
+            # Dynamically set allowed participants if names exist in the provided CSV
+            if name_col:
+                allowed_participants = set(df_proj[name_col].dropna().astype(str).apply(normalize_name))
 
             # --- NHL SECONDARY LINES CSV MERGE ---
             if selected_sport == 'nhl' and input_method == "Use Global/Public Projections" and name_col:
@@ -1439,6 +1445,11 @@ with app_tab:
                             merged_df['Is_Pitcher'] = pd.to_numeric(merged_df['inningsPitched'], errors='coerce').fillna(0) > 0
                         else:
                             merged_df['Is_Pitcher'] = False
+
+                    if allowed_participants:
+                        merged_df['norm_for_filter'] = merged_df['Player Name'].astype(str).apply(normalize_name)
+                        merged_df = merged_df[merged_df['norm_for_filter'].isin(allowed_participants)].drop(columns=['norm_for_filter'])
+                        st.success(f"🎯 Participant Filter Active: {len(merged_df)} players matched.")
 
                     # NEW: Restricting columns visually in tabs per user request (added slot values)
                     display_cols = ['Player Name', 'Boost', 'Injury', 'Projection', 'Optimization Score', 'Slot 1 (2.0x)', 'Slot 2 (1.8x)', 'Slot 3 (1.6x)', 'Slot 4 (1.4x)', 'Slot 5 (1.2x)']
