@@ -1367,7 +1367,11 @@ with app_tab:
                 df_proj['join_key'] = df_proj[name_col].apply(normalize_name)
                 
                 # Use outer join so EVERY player from API or CSV is available in the app (like Tester)
-                merged_df = pd.merge(sport_boosts, df_proj, on='join_key', how='outer')
+                # For Golf, use right join to only show players listed in the uploaded sheet
+                if selected_sport == 'golf':
+                    merged_df = pd.merge(sport_boosts, df_proj, on='join_key', how='right')
+                else:
+                    merged_df = pd.merge(sport_boosts, df_proj, on='join_key', how='outer')
                 
                 merged_df['Boost'] = merged_df['Boost'].fillna(0.0)
                 if name_col in merged_df.columns:
@@ -1750,17 +1754,24 @@ with app_tab:
                 if not sport_boosts.empty:
                     st.subheader(f"Raw Boosts for {selected_sport.upper()}")
                     
-                    st.write("Showing the raw API boost data.")
+                    display_boosts = sport_boosts.copy()
+                    
+                    if allowed_participants:
+                        display_boosts['norm_for_filter'] = display_boosts['Player Name'].astype(str).apply(normalize_name)
+                        display_boosts = display_boosts[display_boosts['norm_for_filter'].isin(allowed_participants)].drop(columns=['norm_for_filter'])
+                        st.success(f"🎯 Participant Filter Active: {len(display_boosts)} players matched from sheet.")
+                    else:
+                        st.write("Showing the raw API boost data.")
                         
                     if selected_sport == 'golf':
-                        sport_boosts['Position'] = pd.to_numeric(sport_boosts['Position'], errors='coerce').astype('Int64')
+                        display_boosts['Position'] = pd.to_numeric(display_boosts['Position'], errors='coerce').astype('Int64')
                         
                     cols_to_show = ['Player Name', 'Boost', 'Position', 'Injury', 'Date']
                     if selected_sport == 'golf':
                         cols_to_show = ['Player Name', 'Boost', 'Position']
                         
                     st.dataframe(
-                        sport_boosts[cols_to_show], 
+                        display_boosts[cols_to_show], 
                         use_container_width=True
                     )
                 else:
